@@ -45,6 +45,7 @@ public class SystemInfoTable extends Application {
     private final ObservableList<ResourceInfo> resourceData = FXCollections.observableArrayList();
     private final ObservableList<FileSystemInfo> fileSystemData = FXCollections.observableArrayList();
     private final ObservableList<ResourceInfo> cpuCoreData = FXCollections.observableArrayList();
+    private final ObservableList<StartupInfo> startupData = FXCollections.observableArrayList();
     
     private Timeline refreshTimeline;
     
@@ -54,6 +55,7 @@ public class SystemInfoTable extends Application {
     private TableView<ResourceInfo> cpuTableView;
 
     private final Map<Integer, OSProcess> previousProcessMap = new HashMap<>();
+    private long previousTimestamp;
     private TableView<ProcessInfo> processTable; // Thêm biến instance
 
     // Inner class definitions (ensured they are present)
@@ -161,32 +163,29 @@ public class SystemInfoTable extends Application {
     }
 
     // ... existing getProcessInfoFromOSHI, getStartupApplications, getStartupAppsFromFolder ...
-    private List<ProcessInfo> getProcessInfoFromOSHI() throws InterruptedException {
+    private List<ProcessInfo> getProcessInfoFromOSHI() {
         SystemInfo si = new SystemInfo();
         OperatingSystem os = si.getOperatingSystem();
+        HardwareAbstractionLayer hardware = si.getHardware();
+        CentralProcessor processor = hardware.getProcessor();
+        int logicalProcessorCount = processor.getLogicalProcessorCount();
 
-        List<OSProcess> initial = os.getProcesses(null, null, 0);
-        Map<Integer, OSProcess> currentMap = new HashMap<>();
+        List<OSProcess> processes = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, 0);
+        long currentTimestamp = System.currentTimeMillis();
         
-        for (OSProcess p : initial) {
-            currentMap.put(p.getProcessID(), p);
-        }
-
-        if (previousProcessMap.isEmpty()) {
-            previousProcessMap.putAll(currentMap);
-            Thread.sleep(1000); // Initial delay to get CPU usage
-            return getProcessInfoFromOSHI();
-        }
-
-        List<OSProcess> updated = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, 0);
         List<ProcessInfo> result = new ArrayList<>();
 
-        for (OSProcess p : updated) {
-            OSProcess old = previousProcessMap.get(p.getProcessID());
-            String user = p.getUser();
-            
-            double cpuRaw = old != null ? p.getProcessCpuLoadBetweenTicks(old) * 100 : 0.0;
-            double cpu = cpuRaw;
+        for (OSProcess p : processes) {
+            double cpu = 0.0;
+            if (previousProcessMap.containsKey(p.getProcessID()) && previousTimestamp > 0) {
+                OSProcess old = previousProcessMap.get(p.getProcessID());
+                long elapsed = currentTimestamp - previousTimestamp;
+                if (elapsed > 0) {
+                    long cputime = p.getKernelTime() + p.getUserTime();
+                    long oldcputime = old.getKernelTime() + old.getUserTime();
+                    cpu = ((cputime - oldcputime) * 100.0 / elapsed) / logicalProcessorCount;
+                }
+            }
             
             double rssMB = p.getResidentSetSize() / (1024.0 * 1024);
             double virtualMemMB = p.getVirtualSize() / (1024.0 * 1024);
@@ -194,9 +193,9 @@ public class SystemInfoTable extends Application {
         
             result.add(new ProcessInfo(
                 p.getName(),
-                user,
+                p.getUser(),
                 String.valueOf(p.getProcessID()),
-                cpu,
+                Math.max(0.0, cpu),
                 rssMB,
                 virtualMemMB,
                 diskReadMB
@@ -204,7 +203,10 @@ public class SystemInfoTable extends Application {
         }
         
         previousProcessMap.clear();
-        previousProcessMap.putAll(currentMap);
+        for (OSProcess p : processes) {
+            previousProcessMap.put(p.getProcessID(), p);
+        }
+        previousTimestamp = currentTimestamp;
         
         return result;
     }
@@ -500,6 +502,32 @@ public class SystemInfoTable extends Application {
         new Thread(task).start();
     }
     
+    private void refreshStartupData() {
+        Task<List<StartupInfo>> task = new Task<List<StartupInfo>>() {
+            @Override
+            protected List<StartupInfo> call() {
+                return getStartupApplications();
+            }
+        };
+
+        task.setOnSucceeded(e -> {
+            List<StartupInfo> newData = task.getValue();
+            Platform.runLater(() -> {
+                startupData.clear();
+                startupData.addAll(newData);
+            });
+        });
+
+        task.setOnFailed(e -> {
+            System.err.println("Failed to refresh startup data: " + e.getSource().getException());
+             if (e.getSource().getException() != null) {
+                e.getSource().getException().printStackTrace();
+            }
+        });
+
+        new Thread(task).start();
+    }
+    
     private void startAutoRefresh() {
         refreshTimeline = new Timeline(new KeyFrame(Duration.seconds(1), e -> { // Ensure this is 1 second
             refreshProcessData();
@@ -703,12 +731,26 @@ public class SystemInfoTable extends Application {
         fileSystemTable.getColumns().addAll(mountCol, nameColFS, typeCol, totalCol, usedCol, availableCol);
         fileSystemTab.setContent(fileSystemTable);
         
-        tabPane.getTabs().addAll(processTab, resourceTab, fileSystemTab);
+        Tab startupTab = new Tab("Startup");
+        TableView<StartupInfo> startupTable = new TableView<>(startupData);
+        TableColumn<StartupInfo, String> startupNameCol = new TableColumn<>("Name");
+        startupNameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        startupNameCol.setPrefWidth(250);
+
+        TableColumn<StartupInfo, String> startupPathCol = new TableColumn<>("Path/Command");
+        startupPathCol.setCellValueFactory(new PropertyValueFactory<>("path"));
+        startupPathCol.setPrefWidth(500);
+
+        startupTable.getColumns().addAll(startupNameCol, startupPathCol);
+        startupTab.setContent(startupTable);
+        
+        tabPane.getTabs().addAll(processTab, resourceTab, fileSystemTab, startupTab);
 
         Scene scene = new Scene(tabPane, 800, 700); // Increased height for charts
         primaryStage.setScene(scene);
         primaryStage.show();
         
+        refreshStartupData();
         startAutoRefresh();
     }
 
