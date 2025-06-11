@@ -21,6 +21,7 @@ import javafx.scene.chart.CategoryAxis;
 import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.PieChart;
 import javafx.scene.chart.XYChart;
+import javafx.scene.control.Button;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TableColumn;
@@ -60,7 +61,6 @@ public class SystemInfoTable extends Application {
 
     // Inner class definitions (ensured they are present)
     public static class ProcessInfo {
-        // ... existing ProcessInfo code ...
         private final String name;
         private final String user;
         private final String pid;
@@ -100,6 +100,19 @@ public class SystemInfoTable extends Application {
         public Double getVirtualMemValue() { return virtualMemValue; }
         public String getDiskRead() { return diskRead; }
         public Double getDiskReadValue() { return diskReadValue; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            ProcessInfo that = (ProcessInfo) o;
+            return pid.equals(that.pid);
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(pid);
+        }
     }
 
     public static class ResourceInfo {
@@ -179,11 +192,13 @@ public class SystemInfoTable extends Application {
             double cpu = 0.0;
             if (previousProcessMap.containsKey(p.getProcessID()) && previousTimestamp > 0) {
                 OSProcess old = previousProcessMap.get(p.getProcessID());
-                long elapsed = currentTimestamp - previousTimestamp;
-                if (elapsed > 0) {
-                    long cputime = p.getKernelTime() + p.getUserTime();
-                    long oldcputime = old.getKernelTime() + old.getUserTime();
-                    cpu = ((cputime - oldcputime) * 100.0 / elapsed) / logicalProcessorCount;
+                if (old != null) {
+                    long elapsed = currentTimestamp - previousTimestamp;
+                    if (elapsed > 0) {
+                        long cputime = p.getKernelTime() + p.getUserTime();
+                        long oldcputime = old.getKernelTime() + old.getUserTime();
+                        cpu = ((cputime - oldcputime) * 100.0 / elapsed) / logicalProcessorCount;
+                    }
                 }
             }
             
@@ -209,6 +224,42 @@ public class SystemInfoTable extends Application {
         previousTimestamp = currentTimestamp;
         
         return result;
+    }
+
+    private void killProcess(String pid) {
+        String osName = System.getProperty("os.name").toLowerCase();
+        String command;
+        if (osName.contains("win")) {
+            command = "taskkill /F /PID " + pid;
+        } else {
+            command = "kill -9 " + pid;
+        }
+
+        Task<Void> killTask = new Task<Void>() {
+            @Override
+            protected Void call() throws Exception {
+                Process process = Runtime.getRuntime().exec(command);
+                process.waitFor();
+                if (process.exitValue() != 0) {
+                    throw new RuntimeException("Process exited with non-zero value: " + process.exitValue());
+                }
+                return null;
+            }
+        };
+
+        killTask.setOnSucceeded(e -> Platform.runLater(this::refreshProcessData));
+
+        killTask.setOnFailed(e -> {
+            Platform.runLater(() -> {
+                javafx.scene.control.Alert alert = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.ERROR);
+                alert.setTitle("Error");
+                alert.setHeaderText("Failed to End Process");
+                alert.setContentText("Could not terminate process with PID: " + pid + ". It might have already been terminated or you may not have the necessary permissions.");
+                alert.showAndWait();
+            });
+        });
+
+        new Thread(killTask).start();
     }
 
     private List<StartupInfo> getStartupApplications() {
@@ -342,14 +393,20 @@ public class SystemInfoTable extends Application {
         task.setOnSucceeded(e -> {
             List<ProcessInfo> newData = task.getValue();
             Platform.runLater(() -> {
+                ProcessInfo selectedItem = processTable.getSelectionModel().getSelectedItem();
+                List<TableColumn<ProcessInfo, ?>> sortOrder = new ArrayList<>(processTable.getSortOrder());
+
                 processData.clear();
                 processData.addAll(newData);
-                if (processTable != null) {
-                    processTable.getSortOrder().clear();
-                    processTable.getSortOrder().add(processTable.getColumns().stream()
-                        .filter(col -> "CPU (%)".equals(col.getText())).findFirst().orElse(null));
-                    processTable.getSortOrder().get(0).setSortType(TableColumn.SortType.DESCENDING);
+
+                if (!sortOrder.isEmpty()) {
+                    processTable.getSortOrder().addAll(sortOrder);
                     processTable.sort();
+                }
+
+                if (selectedItem != null) {
+                    processTable.getSelectionModel().select(selectedItem);
+                    processTable.scrollTo(selectedItem);
                 }
             });
         });
@@ -695,7 +752,20 @@ public class SystemInfoTable extends Application {
                 cpuCol.setSortType(TableColumn.SortType.DESCENDING);
             }
         });
-        processTab.setContent(processTable);
+
+        Button endProcessButton = new Button("End Process");
+        endProcessButton.disableProperty().bind(processTable.getSelectionModel().selectedItemProperty().isNull());
+        endProcessButton.setOnAction(event -> {
+            ProcessInfo selectedProcess = processTable.getSelectionModel().getSelectedItem();
+            if (selectedProcess != null) {
+                killProcess(selectedProcess.getPid());
+            }
+        });
+
+        VBox processLayout = new VBox(10, processTable, endProcessButton);
+        processLayout.setPadding(new Insets(10));
+        processLayout.setAlignment(Pos.CENTER);
+        processTab.setContent(processLayout);
         
         Tab resourceTab = new Tab("Resources");
         VBox resourceLayout = new VBox(10); // Main container for resources tab
