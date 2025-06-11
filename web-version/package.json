@@ -1,0 +1,30 @@
+{
+  "name": "system-monitoring-web",
+  "version": "1.0.0",
+  "description": "Web-based system monitoring tool",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"pnpm run server\" \"pnpm run client\"",
+    "server": "nodemon server/server.js",
+    "client": "cd client && pnpm start",
+    "build": "cd client && pnpm run build",
+    "start": "node server/server.js",
+    "install-all": "pnpm install && cd client && pnpm install"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "cors": "^2.8.5",
+    "systeminformation": "^5.21.8",
+    "ps-list": "^8.1.1",
+    "node-cron": "^3.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "concurrently": "^8.2.0"
+  },
+  "keywords": ["system", "monitoring", "web", "dashboard"],
+  "author": "",
+  "license": "MIT"
+} 
