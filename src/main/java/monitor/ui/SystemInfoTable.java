@@ -18,6 +18,7 @@ import javafx.geometry.Pos; // Ensured import
 import javafx.scene.Scene;
 import javafx.scene.chart.BarChart;
 import javafx.scene.chart.CategoryAxis;
+import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.PieChart;
 import javafx.scene.chart.XYChart;
@@ -36,6 +37,7 @@ import oshi.SystemInfo;
 import oshi.hardware.CentralProcessor;
 import oshi.hardware.GlobalMemory;
 import oshi.hardware.HardwareAbstractionLayer;
+import oshi.hardware.NetworkIF;
 import oshi.software.os.FileSystem;
 import oshi.software.os.OSFileStore;
 import oshi.software.os.OSProcess;
@@ -58,6 +60,37 @@ public class SystemInfoTable extends Application {
     private final Map<Integer, OSProcess> previousProcessMap = new HashMap<>();
     private long previousTimestamp;
     private TableView<ProcessInfo> processTable; // Thêm biến instance
+
+    private static final int MAX_DATA_POINTS = 60; // For 60 seconds of history
+    private final XYChart.Series<String, Number> cpuHistory = new XYChart.Series<>();
+    private final XYChart.Series<String, Number> memHistory = new XYChart.Series<>();
+    private final XYChart.Series<String, Number> swapHistory = new XYChart.Series<>();
+    private final XYChart.Series<String, Number> netUpHistory = new XYChart.Series<>();
+    private final XYChart.Series<String, Number> netDownHistory = new XYChart.Series<>();
+
+    private long[] prevTotalTicks;
+    private long[][] prevProcTicks;
+    private long networkTimestamp;
+    private long bytesSent;
+    private long bytesRecv;
+
+    public static class ResourceSnapshot {
+        final double cpuLoad;
+        final double memLoad;
+        final double swapLoad;
+        final double netUp;
+        final double netDown;
+        final List<ResourceInfo> cpuCores;
+
+        public ResourceSnapshot(double cpuLoad, double memLoad, double swapLoad, double netUp, double netDown, List<ResourceInfo> cpuCores) {
+            this.cpuLoad = cpuLoad;
+            this.memLoad = memLoad;
+            this.swapLoad = swapLoad;
+            this.netUp = netUp;
+            this.netDown = netDown;
+            this.cpuCores = cpuCores;
+        }
+    }
 
     // Inner class definitions (ensured they are present)
     public static class ProcessInfo {
@@ -302,58 +335,70 @@ public class SystemInfoTable extends Application {
         return apps;
     }
 
-    private List<ResourceInfo> getSystemResources() {
-        List<ResourceInfo> resources = new ArrayList<>();
+    private ResourceSnapshot getSystemResources() {
         SystemInfo si = new SystemInfo();
         HardwareAbstractionLayer hardware = si.getHardware();
-        
         CentralProcessor processor = hardware.getProcessor();
-        long[][] prevProcTicks = processor.getProcessorCpuLoadTicks();
-        // Wait a second...
-        try {
-            Thread.sleep(1000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return resources; // Or handle error appropriately
+
+        // CPU calculation
+        long[] currentTotalTicks = processor.getSystemCpuLoadTicks();
+        double cpuLoad = 0.0;
+        if (prevTotalTicks != null) {
+            cpuLoad = processor.getSystemCpuLoadBetweenTicks(prevTotalTicks) * 100;
         }
-        double[] cpuLoads = processor.getProcessorCpuLoadBetweenTicks(prevProcTicks);
-        
-        for (int i = 0; i < cpuLoads.length; i++) {
-            double coreLoad = cpuLoads[i] * 100;
-            resources.add(new ResourceInfo(
-                String.format("CPU Core %d", i), 
-                String.format("%.2f%%", coreLoad), 
-                coreLoad > 50 ? "High" : coreLoad > 20 ? "Medium" : "Low", 
-                "100%", 
-                coreLoad
-            ));
+        prevTotalTicks = currentTotalTicks;
+
+        // Per-core CPU
+        List<ResourceInfo> coreData = new ArrayList<>();
+        long[][] currentProcTicks = processor.getProcessorCpuLoadTicks();
+        if (prevProcTicks != null) {
+            double[] coreLoads = processor.getProcessorCpuLoadBetweenTicks(prevProcTicks);
+            for (int i = 0; i < coreLoads.length; i++) {
+                double coreLoad = coreLoads[i] * 100;
+                coreData.add(new ResourceInfo(
+                    String.format("CPU Core %d", i),
+                    String.format("%.2f%%", coreLoad),
+                    coreLoad > 50 ? "High" : coreLoad > 20 ? "Medium" : "Low",
+                    "100%",
+                    coreLoad
+                ));
+            }
         }
-        
+        prevProcTicks = currentProcTicks;
+
+        // Memory usage
         GlobalMemory memory = hardware.getMemory();
         long totalMemory = memory.getTotal();
         long availableMemory = memory.getAvailable();
-        long usedMemory = totalMemory - availableMemory;
-        double memoryUsagePercent = (double)usedMemory / totalMemory * 100.0;
-        resources.add(new ResourceInfo(
-            "Memory",
-            String.format("%.2f%%", memoryUsagePercent),
-            String.format("%.2f GB", usedMemory / 1e9),
-            String.format("%.2f GB", totalMemory / 1e9),
-            memoryUsagePercent
-        ));
-        
+        double memLoad = totalMemory > 0 ? (double)(totalMemory - availableMemory) / totalMemory * 100.0 : 0.0;
+
+        // Swap usage
         long totalSwap = memory.getVirtualMemory().getSwapTotal();
         long usedSwap = memory.getVirtualMemory().getSwapUsed();
-        double swapUsagePercent = totalSwap > 0 ? (double)usedSwap / totalSwap * 100.0 : 0.0;
-        resources.add(new ResourceInfo(
-            "Swap",
-            String.format("%.2f%%", swapUsagePercent),
-            String.format("%.2f GB", usedSwap / 1e9),
-            String.format("%.2f GB", totalSwap / 1e9),
-            swapUsagePercent
-        ));
-        
-        return resources;
+        double swapLoad = totalSwap > 0 ? (double)usedSwap / totalSwap * 100.0 : 0.0;
+
+        // Network usage
+        long currentBytesSent = 0;
+        long currentBytesRecv = 0;
+        for (NetworkIF net : hardware.getNetworkIFs()) {
+            currentBytesSent += net.getBytesSent();
+            currentBytesRecv += net.getBytesRecv();
+        }
+        long currentNetworkTimestamp = System.currentTimeMillis();
+        double netUp = 0.0;
+        double netDown = 0.0;
+        if (networkTimestamp > 0) {
+            long timeDiff = currentNetworkTimestamp - networkTimestamp;
+            if (timeDiff > 0) {
+                netUp = (currentBytesSent - this.bytesSent) / (timeDiff / 1000.0) / 1024.0; // KB/s
+                netDown = (currentBytesRecv - this.bytesRecv) / (timeDiff / 1000.0) / 1024.0; // KB/s
+            }
+        }
+        this.networkTimestamp = currentNetworkTimestamp;
+        this.bytesSent = currentBytesSent;
+        this.bytesRecv = currentBytesRecv;
+
+        return new ResourceSnapshot(Math.max(0.0, cpuLoad), memLoad, swapLoad, Math.max(0.0, netUp), Math.max(0.0, netDown), coreData);
     }
     
     private List<FileSystemInfo> getFileSystemInfo() {
@@ -419,121 +464,55 @@ public class SystemInfoTable extends Application {
     }
     
     private void refreshResourceData() {
-        Task<List<ResourceInfo>> task = new Task<List<ResourceInfo>>() {
+        Task<ResourceSnapshot> task = new Task<ResourceSnapshot>() {
             @Override
-            protected List<ResourceInfo> call() throws Exception {
+            protected ResourceSnapshot call() throws Exception {
                 return getSystemResources();
             }
         };
         
         task.setOnSucceeded(e -> {
-            List<ResourceInfo> newData = task.getValue();
+            ResourceSnapshot snapshot = task.getValue();
             Platform.runLater(() -> {
-                resourceData.clear();
-                resourceData.addAll(newData);
-                
-                // Update charts if they exist
-                if (cpuChartSeries != null && memoryChart != null && swapChart != null) {
-                    updateCharts(newData);
-                }
+                updateHistoryCharts(snapshot);
             });
         });
         
         task.setOnFailed(e -> {
             System.err.println("Failed to refresh resource data: " + task.getException().getMessage());
+            task.getException().printStackTrace();
         });
         
         new Thread(task).start();
     }
     
-    private void updateCharts(List<ResourceInfo> resources) {
-        // Mượt mà cho CPU BarChart: chỉ cập nhật giá trị, không clear toàn bộ
-        Map<String, Double> cpuCoreValues = new HashMap<>();
-        double memoryUsedGB = 0, memoryTotalGB = 0;
-        double swapUsedGB = 0, swapTotalGB = 0;
-        List<ResourceInfo> cpuCores = new ArrayList<>();
-        for (ResourceInfo resource : resources) {
-            if (resource.getName().startsWith("CPU Core")) {
-                cpuCoreValues.put(resource.getName(), resource.getUsedPercent());
-                cpuCores.add(resource);
-            } else if (resource.getName().equals("Memory")) {
-                try {
-                    memoryUsedGB = Double.parseDouble(resource.getUsed().replace(" GB", ""));
-                    memoryTotalGB = Double.parseDouble(resource.getTotal().replace(" GB", ""));
-                } catch (NumberFormatException e) {
-                    System.err.println("Error parsing memory data from strings '" + resource.getUsed() + "', '" + resource.getTotal() + "': " + e.getMessage());
-                }
-            } else if (resource.getName().equals("Swap")) {
-                try {
-                    swapUsedGB = Double.parseDouble(resource.getUsed().replace(" GB", ""));
-                    swapTotalGB = Double.parseDouble(resource.getTotal().replace(" GB", ""));
-                } catch (NumberFormatException e) {
-                    System.err.println("Error parsing swap data from strings '" + resource.getUsed() + "', '" + resource.getTotal() + "': " + e.getMessage());
-                }
-            }
-        }
-        // Cập nhật bảng CPU core
-        Platform.runLater(() -> {
-            cpuCoreData.clear();
-            cpuCoreData.addAll(cpuCores);
-        });
-        // Cập nhật hoặc thêm các core
-        List<XYChart.Data<String, Number>> existing = cpuChartSeries.getData();
-        for (Map.Entry<String, Double> entry : cpuCoreValues.entrySet()) {
-            boolean found = false;
-            for (XYChart.Data<String, Number> data : existing) {
-                if (data.getXValue().equals(entry.getKey())) {
-                    data.setYValue(entry.getValue());
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                cpuChartSeries.getData().add(new XYChart.Data<>(entry.getKey(), entry.getValue()));
-            }
-        }
-        existing.removeIf(data -> !cpuCoreValues.containsKey(data.getXValue()));
-        
-        // Update Memory pie chart
-        memoryChart.getData().clear();
-        if (memoryTotalGB > 0) {
-            double memoryFreeGB = memoryTotalGB - memoryUsedGB;
-            PieChart.Data usedData = new PieChart.Data(String.format("Used %.1f GB", memoryUsedGB), memoryUsedGB);
-            PieChart.Data freeData = new PieChart.Data(String.format("Free %.1f GB", memoryFreeGB), memoryFreeGB);
-            memoryChart.getData().addAll(usedData, freeData);
+    private void updateHistoryCharts(ResourceSnapshot snapshot) {
+        long now = System.currentTimeMillis();
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("HH:mm:ss");
+        String time = format.format(new java.util.Date(now));
 
-            Platform.runLater(() -> {
-                if(usedData.getNode() != null) usedData.getNode().setStyle("-fx-pie-color: orange;");
-                if(freeData.getNode() != null) freeData.getNode().setStyle("-fx-pie-color: yellow;");
-            });
-        } else {
-             // Handle case where memoryTotalGB might be zero or parsing failed
-             PieChart.Data noMemData = new PieChart.Data("Memory N/A", 1);
-             memoryChart.getData().add(noMemData);
-             Platform.runLater(() -> {
-                if(noMemData.getNode() != null) noMemData.getNode().setStyle("-fx-pie-color: lightgrey;");
-             });
-        }
-        
-        // Update Swap pie chart
-        swapChart.getData().clear();
-        if (swapTotalGB > 0) {
-            double swapFreeGB = swapTotalGB - swapUsedGB;
-            PieChart.Data usedData = new PieChart.Data(String.format("Used %.1f GB", swapUsedGB), swapUsedGB);
-            PieChart.Data freeData = new PieChart.Data(String.format("Free %.1f GB", swapFreeGB), swapFreeGB);
-            swapChart.getData().addAll(usedData, freeData);
+        // CPU
+        cpuHistory.getData().add(new XYChart.Data<>(time, snapshot.cpuLoad));
+        if (cpuHistory.getData().size() > MAX_DATA_POINTS) cpuHistory.getData().remove(0);
 
-            Platform.runLater(() -> {
-                if(usedData.getNode() != null) usedData.getNode().setStyle("-fx-pie-color: orange;");
-                if(freeData.getNode() != null) freeData.getNode().setStyle("-fx-pie-color: yellow;");
-            });
-        } else {
-            PieChart.Data noSwapData = new PieChart.Data("No Swap Available", 1);
-            swapChart.getData().add(noSwapData);
-            Platform.runLater(() -> {
-                 if(noSwapData.getNode() != null) noSwapData.getNode().setStyle("-fx-pie-color: lightgrey;");
-            });
-        }
+        // Memory
+        memHistory.getData().add(new XYChart.Data<>(time, snapshot.memLoad));
+        if (memHistory.getData().size() > MAX_DATA_POINTS) memHistory.getData().remove(0);
+
+        // Swap
+        swapHistory.getData().add(new XYChart.Data<>(time, snapshot.swapLoad));
+        if (swapHistory.getData().size() > MAX_DATA_POINTS) swapHistory.getData().remove(0);
+        
+        // Network
+        netUpHistory.getData().add(new XYChart.Data<>(time, snapshot.netUp));
+        if (netUpHistory.getData().size() > MAX_DATA_POINTS) netUpHistory.getData().remove(0);
+        
+        netDownHistory.getData().add(new XYChart.Data<>(time, snapshot.netDown));
+        if (netDownHistory.getData().size() > MAX_DATA_POINTS) netDownHistory.getData().remove(0);
+
+        // Update CPU core table
+        cpuCoreData.clear();
+        cpuCoreData.addAll(snapshot.cpuCores);
     }
     
     private void refreshFileSystemData() {
@@ -595,35 +574,44 @@ public class SystemInfoTable extends Application {
         refreshTimeline.play();
     }
 
+    private LineChart<String, Number> createHistoryChart(String title, String yAxisLabel, XYChart.Series<String, Number>... series) {
+        CategoryAxis xAxis = new CategoryAxis();
+        xAxis.setLabel("Time");
+        xAxis.setTickLabelsVisible(false);
+
+        NumberAxis yAxis = new NumberAxis();
+        yAxis.setLabel(yAxisLabel);
+
+        LineChart<String, Number> chart = new LineChart<>(xAxis, yAxis);
+        chart.setTitle(title);
+        chart.setAnimated(false);
+        chart.setCreateSymbols(false);
+        chart.getData().addAll(series);
+        chart.setPrefHeight(200);
+
+        return chart;
+    }
+
     private VBox createResourceCharts() {
+        cpuHistory.setName("CPU");
+        memHistory.setName("Memory");
+        swapHistory.setName("Swap");
+
+        LineChart<String, Number> cpuChart = createHistoryChart("CPU Usage (%)", "Usage %", cpuHistory);
+        LineChart<String, Number> memChart = createHistoryChart("Memory Usage (%)", "Usage %", memHistory);
+        LineChart<String, Number> swapChart = createHistoryChart("Swap Usage (%)", "Usage %", swapHistory);
+        
+        netUpHistory.setName("Upload");
+        netDownHistory.setName("Download");
+        LineChart<String, Number> netChart = createHistoryChart("Network (KB/s)", "KB/s", netUpHistory, netDownHistory);
+
         GridPane gridPane = new GridPane();
-        gridPane.setPadding(new Insets(10));
         gridPane.setHgap(10);
         gridPane.setVgap(10);
-        gridPane.setAlignment(Pos.CENTER);
-
-        CategoryAxis xAxis = new CategoryAxis();
-        xAxis.setLabel("CPU Core");
-        NumberAxis yAxis = new NumberAxis(0, 100, 10);
-        yAxis.setLabel("CPU Usage (%)");
-        BarChart<String, Number> cpuChart = new BarChart<>(xAxis, yAxis);
-        cpuChart.setTitle("CPU Cores Usage");
-        cpuChart.setLegendVisible(false);
-        cpuChart.setPrefHeight(250);
-
-        cpuChartSeries = new XYChart.Series<>();
-        cpuChartSeries.setName("CPU Usage");
-        cpuChart.getData().add(cpuChartSeries);
-
-        memoryChart = new PieChart();
-        memoryChart.setTitle("Memory Usage");
-        memoryChart.setPrefSize(250, 250);
-        memoryChart.setAnimated(false);
-
-        swapChart = new PieChart();
-        swapChart.setTitle("Swap Usage");
-        swapChart.setPrefSize(250, 250);
-        swapChart.setAnimated(false);
+        gridPane.add(cpuChart, 0, 0);
+        gridPane.add(memChart, 1, 0);
+        gridPane.add(swapChart, 0, 1);
+        gridPane.add(netChart, 1, 1);
 
         cpuTableView = new TableView<>();
         cpuTableView.setItems(cpuCoreData);
@@ -687,21 +675,8 @@ public class SystemInfoTable extends Application {
         });
         cpuTableView.getColumns().addAll(coreNameCol, usageCol, statusCol);
 
-        // Add to grid: row 0 (charts)
-        gridPane.add(cpuChart, 0, 0, 2, 1); // CPU Chart spans 2 columns
-        gridPane.add(memoryChart, 2, 0);    // Memory Chart
-        gridPane.add(swapChart, 3, 0);      // Swap Chart
-        // Add to grid: row 1 (table)
-        gridPane.add(cpuTableView, 0, 1, 4, 1); // Table spans all 4 columns
-
-        // Set column constraints for 4 equal columns
-        for (int i = 0; i < 4; i++) {
-            ColumnConstraints col = new ColumnConstraints();
-            col.setPercentWidth(25);
-            gridPane.getColumnConstraints().add(col);
-        }
-
-        VBox container = new VBox(gridPane);
+        VBox container = new VBox(10, gridPane, cpuTableView);
+        container.setPadding(new Insets(10));
         container.setAlignment(Pos.CENTER);
         return container;
     }
