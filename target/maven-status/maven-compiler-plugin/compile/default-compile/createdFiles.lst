@@ -1,0 +1,15 @@
+monitor/ui/SystemInfoTable$ResourceInfo.class
+monitor/ui/SystemInfoTable$1.class
+monitor/ui/SystemInfoTable$2.class
+monitor/ui/SystemInfoTable$FileSystemInfo.class
+CPUInfo.class
+monitor/ui/SystemInfoTable$ProcessInfo.class
+TestMemoryValues.class
+monitor/ui/SystemInfoTable$3.class
+Main.class
+monitor/ui/SystemInfoTable$StartupInfo.class
+MemoryInfo.class
+NetworkInfo.class
+monitor/ui/SystemInfoTable.class
+monitor/ui/SystemdStartupDetector.class
+ProcessInfoCollector.class
