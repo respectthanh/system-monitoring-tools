@@ -16,11 +16,17 @@ import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos; // Ensured import
 import javafx.scene.Scene;
-import javafx.scene.chart.BarChart;
+
 import javafx.scene.chart.CategoryAxis;
+import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
-import javafx.scene.chart.PieChart;
+
 import javafx.scene.chart.XYChart;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TableColumn;
@@ -49,10 +55,16 @@ public class SystemInfoTable extends Application {
     
     private Timeline refreshTimeline;
     
-    private XYChart.Series<String, Number> cpuChartSeries;
-    private PieChart memoryChart;
-    private PieChart swapChart;
+    private LineChart<String, Number> cpuLineChart;
+    private LineChart<String, Number> memoryLineChart;
+    private LineChart<String, Number> swapLineChart;
     private TableView<ResourceInfo> cpuTableView;
+
+    // Line chart series for historical data
+    private final XYChart.Series<String, Number> cpuHistorySeries = new XYChart.Series<>();
+    private final XYChart.Series<String, Number> memoryHistorySeries = new XYChart.Series<>(); 
+    private final XYChart.Series<String, Number> swapHistorySeries = new XYChart.Series<>();
+    private static final int MAX_DATA_POINTS = 30; // Keep last 30 data points
 
     private final Map<Integer, OSProcess> previousProcessMap = new HashMap<>();
     private long previousTimestamp;
@@ -100,6 +112,19 @@ public class SystemInfoTable extends Application {
         public Double getVirtualMemValue() { return virtualMemValue; }
         public String getDiskRead() { return diskRead; }
         public Double getDiskReadValue() { return diskReadValue; }
+        
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (obj == null || getClass() != obj.getClass()) return false;
+            ProcessInfo that = (ProcessInfo) obj;
+            return pid.equals(that.pid);
+        }
+        
+        @Override
+        public int hashCode() {
+            return pid.hashCode();
+        }
     }
 
     public static class ResourceInfo {
@@ -342,14 +367,51 @@ public class SystemInfoTable extends Application {
         task.setOnSucceeded(e -> {
             List<ProcessInfo> newData = task.getValue();
             Platform.runLater(() -> {
+                // Save currently selected process PID if any
+                ProcessInfo selectedProcess = processTable != null ? processTable.getSelectionModel().getSelectedItem() : null;
+                String selectedPid = selectedProcess != null ? selectedProcess.getPid() : null;
+                
+                // Save current sort order
+                List<TableColumn<ProcessInfo, ?>> currentSortOrder = new ArrayList<>();
+                List<TableColumn.SortType> currentSortTypes = new ArrayList<>();
+                if (processTable != null && !processTable.getSortOrder().isEmpty()) {
+                    for (TableColumn<ProcessInfo, ?> col : processTable.getSortOrder()) {
+                        currentSortOrder.add(col);
+                        currentSortTypes.add(col.getSortType());
+                    }
+                }
+                
+                // Update data
                 processData.clear();
                 processData.addAll(newData);
+                
+                // Restore sort order
                 if (processTable != null) {
-                    processTable.getSortOrder().clear();
-                    processTable.getSortOrder().add(processTable.getColumns().stream()
-                        .filter(col -> "CPU (%)".equals(col.getText())).findFirst().orElse(null));
-                    processTable.getSortOrder().get(0).setSortType(TableColumn.SortType.DESCENDING);
+                    if (!currentSortOrder.isEmpty()) {
+                        processTable.getSortOrder().clear();
+                        processTable.getSortOrder().addAll(currentSortOrder);
+                        for (int i = 0; i < currentSortOrder.size(); i++) {
+                            currentSortOrder.get(i).setSortType(currentSortTypes.get(i));
+                        }
+                    } else {
+                        // Default to CPU sort if no previous sort
+                        processTable.getSortOrder().clear();
+                        processTable.getSortOrder().add(processTable.getColumns().stream()
+                            .filter(col -> "CPU (%)".equals(col.getText())).findFirst().orElse(null));
+                        processTable.getSortOrder().get(0).setSortType(TableColumn.SortType.DESCENDING);
+                    }
                     processTable.sort();
+                    
+                    // Restore selection if the process still exists
+                    if (selectedPid != null) {
+                        for (ProcessInfo process : processData) {
+                            if (selectedPid.equals(process.getPid())) {
+                                processTable.getSelectionModel().select(process);
+                                processTable.scrollTo(process);
+                                break;
+                            }
+                        }
+                    }
                 }
             });
         });
@@ -376,7 +438,7 @@ public class SystemInfoTable extends Application {
                 resourceData.addAll(newData);
                 
                 // Update charts if they exist
-                if (cpuChartSeries != null && memoryChart != null && swapChart != null) {
+                if (cpuLineChart != null && memoryLineChart != null && swapLineChart != null) {
                     updateCharts(newData);
                 }
             });
@@ -390,92 +452,57 @@ public class SystemInfoTable extends Application {
     }
     
     private void updateCharts(List<ResourceInfo> resources) {
-        // Mượt mà cho CPU BarChart: chỉ cập nhật giá trị, không clear toàn bộ
-        Map<String, Double> cpuCoreValues = new HashMap<>();
-        double memoryUsedGB = 0, memoryTotalGB = 0;
-        double swapUsedGB = 0, swapTotalGB = 0;
+        // Calculate overall CPU usage as average of all cores
+        double totalCpuUsage = 0.0;
+        int cpuCoreCount = 0;
+        double memoryUsagePercent = 0.0;
+        double swapUsagePercent = 0.0;
         List<ResourceInfo> cpuCores = new ArrayList<>();
+        
         for (ResourceInfo resource : resources) {
             if (resource.getName().startsWith("CPU Core")) {
-                cpuCoreValues.put(resource.getName(), resource.getUsedPercent());
+                totalCpuUsage += resource.getUsedPercent();
+                cpuCoreCount++;
                 cpuCores.add(resource);
             } else if (resource.getName().equals("Memory")) {
-                try {
-                    memoryUsedGB = Double.parseDouble(resource.getUsed().replace(" GB", ""));
-                    memoryTotalGB = Double.parseDouble(resource.getTotal().replace(" GB", ""));
-                } catch (NumberFormatException e) {
-                    System.err.println("Error parsing memory data from strings '" + resource.getUsed() + "', '" + resource.getTotal() + "': " + e.getMessage());
-                }
+                memoryUsagePercent = resource.getUsedPercent();
             } else if (resource.getName().equals("Swap")) {
-                try {
-                    swapUsedGB = Double.parseDouble(resource.getUsed().replace(" GB", ""));
-                    swapTotalGB = Double.parseDouble(resource.getTotal().replace(" GB", ""));
-                } catch (NumberFormatException e) {
-                    System.err.println("Error parsing swap data from strings '" + resource.getUsed() + "', '" + resource.getTotal() + "': " + e.getMessage());
-                }
+                swapUsagePercent = resource.getUsedPercent();
             }
         }
-        // Cập nhật bảng CPU core
+        
+        // Calculate average CPU usage
+        if (cpuCoreCount > 0) {
+            totalCpuUsage = totalCpuUsage / cpuCoreCount;
+        }
+        
+        // Update CPU core table
         Platform.runLater(() -> {
             cpuCoreData.clear();
             cpuCoreData.addAll(cpuCores);
         });
-        // Cập nhật hoặc thêm các core
-        List<XYChart.Data<String, Number>> existing = cpuChartSeries.getData();
-        for (Map.Entry<String, Double> entry : cpuCoreValues.entrySet()) {
-            boolean found = false;
-            for (XYChart.Data<String, Number> data : existing) {
-                if (data.getXValue().equals(entry.getKey())) {
-                    data.setYValue(entry.getValue());
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                cpuChartSeries.getData().add(new XYChart.Data<>(entry.getKey(), entry.getValue()));
-            }
-        }
-        existing.removeIf(data -> !cpuCoreValues.containsKey(data.getXValue()));
         
-        // Update Memory pie chart
-        memoryChart.getData().clear();
-        if (memoryTotalGB > 0) {
-            double memoryFreeGB = memoryTotalGB - memoryUsedGB;
-            PieChart.Data usedData = new PieChart.Data(String.format("Used %.1f GB", memoryUsedGB), memoryUsedGB);
-            PieChart.Data freeData = new PieChart.Data(String.format("Free %.1f GB", memoryFreeGB), memoryFreeGB);
-            memoryChart.getData().addAll(usedData, freeData);
-
-            Platform.runLater(() -> {
-                if(usedData.getNode() != null) usedData.getNode().setStyle("-fx-pie-color: orange;");
-                if(freeData.getNode() != null) freeData.getNode().setStyle("-fx-pie-color: yellow;");
-            });
-        } else {
-             // Handle case where memoryTotalGB might be zero or parsing failed
-             PieChart.Data noMemData = new PieChart.Data("Memory N/A", 1);
-             memoryChart.getData().add(noMemData);
-             Platform.runLater(() -> {
-                if(noMemData.getNode() != null) noMemData.getNode().setStyle("-fx-pie-color: lightgrey;");
-             });
+        // Add data points to line charts with timestamp
+        long now = System.currentTimeMillis();
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("HH:mm:ss");
+        String timeLabel = format.format(new java.util.Date(now));
+        
+        // Update CPU line chart
+        cpuHistorySeries.getData().add(new XYChart.Data<>(timeLabel, totalCpuUsage));
+        if (cpuHistorySeries.getData().size() > MAX_DATA_POINTS) {
+            cpuHistorySeries.getData().remove(0);
         }
         
-        // Update Swap pie chart
-        swapChart.getData().clear();
-        if (swapTotalGB > 0) {
-            double swapFreeGB = swapTotalGB - swapUsedGB;
-            PieChart.Data usedData = new PieChart.Data(String.format("Used %.1f GB", swapUsedGB), swapUsedGB);
-            PieChart.Data freeData = new PieChart.Data(String.format("Free %.1f GB", swapFreeGB), swapFreeGB);
-            swapChart.getData().addAll(usedData, freeData);
-
-            Platform.runLater(() -> {
-                if(usedData.getNode() != null) usedData.getNode().setStyle("-fx-pie-color: orange;");
-                if(freeData.getNode() != null) freeData.getNode().setStyle("-fx-pie-color: yellow;");
-            });
-        } else {
-            PieChart.Data noSwapData = new PieChart.Data("No Swap Available", 1);
-            swapChart.getData().add(noSwapData);
-            Platform.runLater(() -> {
-                 if(noSwapData.getNode() != null) noSwapData.getNode().setStyle("-fx-pie-color: lightgrey;");
-            });
+        // Update Memory line chart
+        memoryHistorySeries.getData().add(new XYChart.Data<>(timeLabel, memoryUsagePercent));
+        if (memoryHistorySeries.getData().size() > MAX_DATA_POINTS) {
+            memoryHistorySeries.getData().remove(0);
+        }
+        
+        // Update Swap line chart
+        swapHistorySeries.getData().add(new XYChart.Data<>(timeLabel, swapUsagePercent));
+        if (swapHistorySeries.getData().size() > MAX_DATA_POINTS) {
+            swapHistorySeries.getData().remove(0);
         }
     }
     
@@ -545,28 +572,53 @@ public class SystemInfoTable extends Application {
         gridPane.setVgap(10);
         gridPane.setAlignment(Pos.CENTER);
 
-        CategoryAxis xAxis = new CategoryAxis();
-        xAxis.setLabel("CPU Core");
-        NumberAxis yAxis = new NumberAxis(0, 100, 10);
-        yAxis.setLabel("CPU Usage (%)");
-        BarChart<String, Number> cpuChart = new BarChart<>(xAxis, yAxis);
-        cpuChart.setTitle("CPU Cores Usage");
-        cpuChart.setLegendVisible(false);
-        cpuChart.setPrefHeight(250);
+        // CPU Usage Line Chart
+        CategoryAxis cpuXAxis = new CategoryAxis();
+        cpuXAxis.setLabel("Time");
+        cpuXAxis.setTickLabelsVisible(false);
+        NumberAxis cpuYAxis = new NumberAxis(0, 100, 10);
+        cpuYAxis.setLabel("CPU Usage (%)");
+        cpuLineChart = new LineChart<>(cpuXAxis, cpuYAxis);
+        cpuLineChart.setTitle("CPU Usage History");
+        cpuLineChart.setAnimated(false);
+        cpuLineChart.setCreateSymbols(false);
+        cpuLineChart.setPrefHeight(250);
+        cpuLineChart.setPrefWidth(300);
+        
+        cpuHistorySeries.setName("CPU Usage");
+        cpuLineChart.getData().add(cpuHistorySeries);
 
-        cpuChartSeries = new XYChart.Series<>();
-        cpuChartSeries.setName("CPU Usage");
-        cpuChart.getData().add(cpuChartSeries);
+        // Memory Usage Line Chart
+        CategoryAxis memoryXAxis = new CategoryAxis();
+        memoryXAxis.setLabel("Time");
+        memoryXAxis.setTickLabelsVisible(false);
+        NumberAxis memoryYAxis = new NumberAxis(0, 100, 10);
+        memoryYAxis.setLabel("Memory Usage (%)");
+        memoryLineChart = new LineChart<>(memoryXAxis, memoryYAxis);
+        memoryLineChart.setTitle("Memory Usage History");
+        memoryLineChart.setAnimated(false);
+        memoryLineChart.setCreateSymbols(false);
+        memoryLineChart.setPrefHeight(250);
+        memoryLineChart.setPrefWidth(300);
+        
+        memoryHistorySeries.setName("Memory Usage");
+        memoryLineChart.getData().add(memoryHistorySeries);
 
-        memoryChart = new PieChart();
-        memoryChart.setTitle("Memory Usage");
-        memoryChart.setPrefSize(250, 250);
-        memoryChart.setAnimated(false);
-
-        swapChart = new PieChart();
-        swapChart.setTitle("Swap Usage");
-        swapChart.setPrefSize(250, 250);
-        swapChart.setAnimated(false);
+        // Swap Usage Line Chart
+        CategoryAxis swapXAxis = new CategoryAxis();
+        swapXAxis.setLabel("Time");
+        swapXAxis.setTickLabelsVisible(false);
+        NumberAxis swapYAxis = new NumberAxis(0, 100, 10);
+        swapYAxis.setLabel("Swap Usage (%)");
+        swapLineChart = new LineChart<>(swapXAxis, swapYAxis);
+        swapLineChart.setTitle("Swap Usage History");
+        swapLineChart.setAnimated(false);
+        swapLineChart.setCreateSymbols(false);
+        swapLineChart.setPrefHeight(250);
+        swapLineChart.setPrefWidth(300);
+        
+        swapHistorySeries.setName("Swap Usage");
+        swapLineChart.getData().add(swapHistorySeries);
 
         cpuTableView = new TableView<>();
         cpuTableView.setItems(cpuCoreData);
@@ -631,16 +683,16 @@ public class SystemInfoTable extends Application {
         cpuTableView.getColumns().addAll(coreNameCol, usageCol, statusCol);
 
         // Add to grid: row 0 (charts)
-        gridPane.add(cpuChart, 0, 0, 2, 1); // CPU Chart spans 2 columns
-        gridPane.add(memoryChart, 2, 0);    // Memory Chart
-        gridPane.add(swapChart, 3, 0);      // Swap Chart
+        gridPane.add(cpuLineChart, 0, 0);       // CPU Chart
+        gridPane.add(memoryLineChart, 1, 0);    // Memory Chart
+        gridPane.add(swapLineChart, 2, 0);      // Swap Chart
         // Add to grid: row 1 (table)
-        gridPane.add(cpuTableView, 0, 1, 4, 1); // Table spans all 4 columns
+        gridPane.add(cpuTableView, 0, 1, 3, 1); // Table spans all 3 columns
 
-        // Set column constraints for 4 equal columns
-        for (int i = 0; i < 4; i++) {
+        // Set column constraints for 3 equal columns
+        for (int i = 0; i < 3; i++) {
             ColumnConstraints col = new ColumnConstraints();
-            col.setPercentWidth(25);
+            col.setPercentWidth(33.33);
             gridPane.getColumnConstraints().add(col);
         }
 
@@ -695,7 +747,77 @@ public class SystemInfoTable extends Application {
                 cpuCol.setSortType(TableColumn.SortType.DESCENDING);
             }
         });
-        processTab.setContent(processTable);
+        
+        // Add context menu for End Process functionality
+        ContextMenu contextMenu = new ContextMenu();
+        MenuItem endProcessItem = new MenuItem("End Process");
+        endProcessItem.setOnAction(event -> {
+            ProcessInfo selectedProcess = processTable.getSelectionModel().getSelectedItem();
+            if (selectedProcess != null) {
+                // Show confirmation dialog
+                Alert confirmAlert = new Alert(Alert.AlertType.CONFIRMATION);
+                confirmAlert.setTitle("Confirm Process Termination");
+                confirmAlert.setHeaderText("End Process");
+                confirmAlert.setContentText("Are you sure you want to terminate process '" 
+                    + selectedProcess.getName() + "' (PID: " + selectedProcess.getPid() + ")?");
+                
+                confirmAlert.showAndWait().ifPresent(response -> {
+                    if (response == ButtonType.OK) {
+                        // Run kill process in background thread
+                        Task<Void> killTask = new Task<Void>() {
+                            @Override
+                            protected Void call() throws Exception {
+                                killProcess(selectedProcess.getPid());
+                                return null;
+                            }
+                        };
+                        new Thread(killTask).start();
+                    }
+                });
+            }
+        });
+        contextMenu.getItems().add(endProcessItem);
+        processTable.setContextMenu(contextMenu);
+        
+        // Add End Process button below the table
+        Button endProcessButton = new Button("End Selected Process");
+        endProcessButton.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold;");
+        endProcessButton.setOnAction(event -> {
+            ProcessInfo selectedProcess = processTable.getSelectionModel().getSelectedItem();
+            if (selectedProcess != null) {
+                // Show confirmation dialog
+                Alert confirmAlert = new Alert(Alert.AlertType.CONFIRMATION);
+                confirmAlert.setTitle("Confirm Process Termination");
+                confirmAlert.setHeaderText("End Process");
+                confirmAlert.setContentText("Are you sure you want to terminate process '" 
+                    + selectedProcess.getName() + "' (PID: " + selectedProcess.getPid() + ")?");
+                
+                confirmAlert.showAndWait().ifPresent(response -> {
+                    if (response == ButtonType.OK) {
+                        // Run kill process in background thread
+                        Task<Void> killTask = new Task<Void>() {
+                            @Override
+                            protected Void call() throws Exception {
+                                killProcess(selectedProcess.getPid());
+                                return null;
+                            }
+                        };
+                        new Thread(killTask).start();
+                    }
+                });
+            } else {
+                Alert alert = new Alert(Alert.AlertType.WARNING);
+                alert.setTitle("No Process Selected");
+                alert.setHeaderText("Warning");
+                alert.setContentText("Please select a process from the table to terminate.");
+                alert.showAndWait();
+            }
+        });
+        
+        VBox processLayout = new VBox(10, processTable, endProcessButton);
+        processLayout.setPadding(new Insets(10));
+        processLayout.setAlignment(Pos.CENTER);
+        processTab.setContent(processLayout);
         
         Tab resourceTab = new Tab("Resources");
         VBox resourceLayout = new VBox(10); // Main container for resources tab
@@ -752,6 +874,51 @@ public class SystemInfoTable extends Application {
         
         refreshStartupData();
         startAutoRefresh();
+    }
+
+    private void killProcess(String pid) {
+        try {
+            String osName = System.getProperty("os.name").toLowerCase();
+            Process process;
+            
+            if (osName.contains("win")) {
+                // Windows: Use taskkill command
+                process = Runtime.getRuntime().exec("taskkill /F /PID " + pid);
+            } else {
+                // Linux/Unix: Use kill command
+                process = Runtime.getRuntime().exec("kill -9 " + pid);
+            }
+            
+            int exitCode = process.waitFor();
+            
+            Platform.runLater(() -> {
+                Alert alert;
+                if (exitCode == 0) {
+                    alert = new Alert(Alert.AlertType.INFORMATION);
+                    alert.setTitle("Process Terminated");
+                    alert.setHeaderText("Success");
+                    alert.setContentText("Process with PID " + pid + " has been terminated successfully.");
+                } else {
+                    alert = new Alert(Alert.AlertType.ERROR);
+                    alert.setTitle("Process Termination Failed");
+                    alert.setHeaderText("Error");
+                    alert.setContentText("Failed to terminate process with PID " + pid + ". You may not have sufficient permissions.");
+                }
+                alert.showAndWait();
+                
+                // Refresh process data after killing
+                refreshProcessData();
+            });
+            
+        } catch (Exception e) {
+            Platform.runLater(() -> {
+                Alert alert = new Alert(Alert.AlertType.ERROR);
+                alert.setTitle("Process Termination Error");
+                alert.setHeaderText("Exception occurred");
+                alert.setContentText("Error terminating process: " + e.getMessage());
+                alert.showAndWait();
+            });
+        }
     }
 
     public static void main(String[] args) {
