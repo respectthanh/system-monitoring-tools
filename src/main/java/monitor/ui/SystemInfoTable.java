@@ -31,6 +31,9 @@ import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
+import javafx.scene.control.TreeItem;
+import javafx.scene.control.TreeTableView;
+import javafx.scene.control.TreeTableColumn;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
@@ -52,6 +55,7 @@ public class SystemInfoTable extends Application {
     private final ObservableList<FileSystemInfo> fileSystemData = FXCollections.observableArrayList();
     private final ObservableList<ResourceInfo> cpuCoreData = FXCollections.observableArrayList();
     private final ObservableList<StartupInfo> startupData = FXCollections.observableArrayList();
+    private TreeItem<StartupGroup> startupTreeRoot;
     
     private Timeline refreshTimeline;
     
@@ -185,6 +189,66 @@ public class SystemInfoTable extends Application {
 
         public String getName() { return name; }
         public String getPath() { return path; }
+        
+        public String getDirectory() {
+            if (path.contains("/")) {
+                return path.substring(0, path.lastIndexOf('/'));
+            } else {
+                return "Unknown"; // Default directory for items without path separators
+            }
+        }
+    }
+    
+    // New class for grouped startup items
+    public static class StartupGroup {
+        private final String directoryPath;
+        private final String directoryName;
+        private final List<StartupInfo> items;
+        private final boolean isGroup;
+        
+        // Constructor for group (directory)
+        public StartupGroup(String directoryPath) {
+            this.directoryPath = directoryPath;
+            this.directoryName = directoryPath.contains("/") ? 
+                directoryPath.substring(directoryPath.lastIndexOf('/') + 1) : directoryPath;
+            this.items = new ArrayList<>();
+            this.isGroup = true;
+        }
+        
+        // Constructor for individual item
+        public StartupGroup(StartupInfo item) {
+            this.directoryPath = "";
+            this.directoryName = item.getName();
+            this.items = new ArrayList<>();
+            this.items.add(item);
+            this.isGroup = false;
+        }
+        
+        public void addItem(StartupInfo item) {
+            if (isGroup) {
+                items.add(item);
+            }
+        }
+        
+        public String getDisplayName() {
+            if (isGroup) {
+                return directoryName + " (" + items.size() + " items)";
+            } else {
+                return directoryName;
+            }
+        }
+        
+        public String getDisplayPath() {
+            if (isGroup) {
+                return directoryPath;
+            } else {
+                return items.isEmpty() ? "" : items.get(0).getPath();
+            }
+        }
+        
+        public boolean isGroup() { return isGroup; }
+        public List<StartupInfo> getItems() { return items; }
+        public String getDirectoryPath() { return directoryPath; }
     }
 
     // ... existing getProcessInfoFromOSHI, getStartupApplications, getStartupAppsFromFolder ...
@@ -385,6 +449,9 @@ public class SystemInfoTable extends Application {
                 processData.clear();
                 processData.addAll(newData);
                 
+                // Temporarily disable selection events during update
+                processTable.getSelectionModel().clearSelection();
+                
                 // Restore sort order
                 if (processTable != null) {
                     if (!currentSortOrder.isEmpty()) {
@@ -396,18 +463,26 @@ public class SystemInfoTable extends Application {
                     } else {
                         // Default to CPU sort if no previous sort
                         processTable.getSortOrder().clear();
-                        processTable.getSortOrder().add(processTable.getColumns().stream()
-                            .filter(col -> "CPU (%)".equals(col.getText())).findFirst().orElse(null));
-                        processTable.getSortOrder().get(0).setSortType(TableColumn.SortType.DESCENDING);
+                        TableColumn<ProcessInfo, ?> cpuColumn = processTable.getColumns().stream()
+                            .filter(col -> "CPU (%)".equals(col.getText())).findFirst().orElse(null);
+                        if (cpuColumn != null) {
+                            processTable.getSortOrder().add(cpuColumn);
+                            cpuColumn.setSortType(TableColumn.SortType.DESCENDING);
+                        }
                     }
                     processTable.sort();
                     
-                    // Restore selection if the process still exists
+                    // Clear any automatic selection first
+                    processTable.getSelectionModel().clearSelection();
+                    
+                    // Restore selection only if the process still exists (without affecting sort order)
                     if (selectedPid != null) {
-                        for (ProcessInfo process : processData) {
+                        // Find the process in the current sorted list
+                        for (int i = 0; i < processData.size(); i++) {
+                            ProcessInfo process = processData.get(i);
                             if (selectedPid.equals(process.getPid())) {
-                                processTable.getSelectionModel().select(process);
-                                processTable.scrollTo(process);
+                                // Select by index to maintain sort order - NO SCROLLING
+                                processTable.getSelectionModel().select(i);
                                 break;
                             }
                         }
@@ -529,6 +604,75 @@ public class SystemInfoTable extends Application {
         new Thread(task).start();
     }
     
+    private TreeTableView<StartupGroup> createStartupTreeTable() {
+        // Initialize root
+        startupTreeRoot = new TreeItem<>(new StartupGroup("Root"));
+        startupTreeRoot.setExpanded(true);
+        
+        TreeTableView<StartupGroup> treeTable = new TreeTableView<>(startupTreeRoot);
+        treeTable.setShowRoot(false);
+        
+        // Name column
+        TreeTableColumn<StartupGroup, String> nameColumn = new TreeTableColumn<>("Name");
+        nameColumn.setCellValueFactory(cellData -> 
+            new javafx.beans.property.SimpleStringProperty(cellData.getValue().getValue().getDisplayName()));
+        nameColumn.setPrefWidth(350);
+        
+        // Path column  
+        TreeTableColumn<StartupGroup, String> pathColumn = new TreeTableColumn<>("Path/Command");
+        pathColumn.setCellValueFactory(cellData -> 
+            new javafx.beans.property.SimpleStringProperty(cellData.getValue().getValue().getDisplayPath()));
+        pathColumn.setPrefWidth(450);
+        
+        treeTable.getColumns().add(nameColumn);
+        treeTable.getColumns().add(pathColumn);
+        
+        return treeTable;
+    }
+    
+    private void updateStartupTreeData() {
+        Platform.runLater(() -> {
+            // Clear existing children
+            startupTreeRoot.getChildren().clear();
+            
+            // Group startup items by directory
+            Map<String, List<StartupInfo>> directoryGroups = new HashMap<>();
+            
+            for (StartupInfo item : startupData) {
+                String directory = item.getDirectory();
+                directoryGroups.computeIfAbsent(directory, k -> new ArrayList<>()).add(item);
+            }
+            
+            // Create tree structure
+            for (Map.Entry<String, List<StartupInfo>> entry : directoryGroups.entrySet()) {
+                String directory = entry.getKey();
+                List<StartupInfo> items = entry.getValue();
+                
+                if (items.size() == 1) {
+                    // Single item - add directly
+                    StartupGroup singleItemGroup = new StartupGroup(items.get(0));
+                    TreeItem<StartupGroup> itemNode = new TreeItem<>(singleItemGroup);
+                    startupTreeRoot.getChildren().add(itemNode);
+                } else {
+                    // Multiple items - create directory group
+                    StartupGroup directoryGroup = new StartupGroup(directory);
+                    TreeItem<StartupGroup> directoryNode = new TreeItem<>(directoryGroup);
+                    directoryNode.setExpanded(false); // Initially collapsed
+                    
+                    // Add individual items under directory
+                    for (StartupInfo item : items) {
+                        directoryGroup.addItem(item);
+                        StartupGroup itemGroup = new StartupGroup(item);
+                        TreeItem<StartupGroup> itemNode = new TreeItem<>(itemGroup);
+                        directoryNode.getChildren().add(itemNode);
+                    }
+                    
+                    startupTreeRoot.getChildren().add(directoryNode);
+                }
+            }
+        });
+    }
+
     private void refreshStartupData() {
         Task<List<StartupInfo>> task = new Task<List<StartupInfo>>() {
             @Override
@@ -542,6 +686,10 @@ public class SystemInfoTable extends Application {
             Platform.runLater(() -> {
                 startupData.clear();
                 startupData.addAll(newData);
+                // Update tree view data
+                if (startupTreeRoot != null) {
+                    updateStartupTreeData();
+                }
             });
         });
 
@@ -563,6 +711,13 @@ public class SystemInfoTable extends Application {
         }));
         refreshTimeline.setCycleCount(Timeline.INDEFINITE);
         refreshTimeline.play();
+        
+        // Refresh startup data every 30 seconds (since it changes less frequently)
+        Timeline startupRefreshTimeline = new Timeline(new KeyFrame(Duration.seconds(30), e -> {
+            refreshStartupData();
+        }));
+        startupRefreshTimeline.setCycleCount(Timeline.INDEFINITE);
+        startupRefreshTimeline.play();
     }
 
     private VBox createResourceCharts() {
@@ -740,6 +895,10 @@ public class SystemInfoTable extends Application {
         processTable.getSortOrder().add(cpuCol);
         cpuCol.setSortType(TableColumn.SortType.DESCENDING);
         processTable.sort();
+        
+        // Clear any automatic selection after initial setup
+        processTable.getSelectionModel().clearSelection();
+        
         // Đảm bảo luôn giữ sắp xếp theo CPU nếu người dùng bỏ sort
         processTable.setOnSort(event -> {
             if (processTable.getSortOrder().isEmpty()) {
@@ -854,17 +1013,8 @@ public class SystemInfoTable extends Application {
         fileSystemTab.setContent(fileSystemTable);
         
         Tab startupTab = new Tab("Startup");
-        TableView<StartupInfo> startupTable = new TableView<>(startupData);
-        TableColumn<StartupInfo, String> startupNameCol = new TableColumn<>("Name");
-        startupNameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
-        startupNameCol.setPrefWidth(250);
-
-        TableColumn<StartupInfo, String> startupPathCol = new TableColumn<>("Path/Command");
-        startupPathCol.setCellValueFactory(new PropertyValueFactory<>("path"));
-        startupPathCol.setPrefWidth(500);
-
-        startupTable.getColumns().addAll(startupNameCol, startupPathCol);
-        startupTab.setContent(startupTable);
+        TreeTableView<StartupGroup> startupTreeTable = createStartupTreeTable();
+        startupTab.setContent(startupTreeTable);
         
         tabPane.getTabs().addAll(processTab, resourceTab, fileSystemTab, startupTab);
 
