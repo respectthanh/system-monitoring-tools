@@ -251,111 +251,39 @@ public class SystemInfoTable extends Application {
         public String getDirectoryPath() { return directoryPath; }
     }
 
-    // ... existing getProcessInfoFromOSHI, getStartupApplications, getStartupAppsFromFolder ...
-    private List<ProcessInfo> getProcessInfoFromOSHI() {
-        SystemInfo si = new SystemInfo();
-        OperatingSystem os = si.getOperatingSystem();
-        HardwareAbstractionLayer hardware = si.getHardware();
-        CentralProcessor processor = hardware.getProcessor();
-        int logicalProcessorCount = processor.getLogicalProcessorCount();
-
-        List<OSProcess> processes = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, 0);
-        long currentTimestamp = System.currentTimeMillis();
-        
-        List<ProcessInfo> result = new ArrayList<>();
-
-        for (OSProcess p : processes) {
-            double cpu = 0.0;
-            if (previousProcessMap.containsKey(p.getProcessID()) && previousTimestamp > 0) {
-                OSProcess old = previousProcessMap.get(p.getProcessID());
-                long elapsed = currentTimestamp - previousTimestamp;
-                if (elapsed > 0) {
-                    long cputime = p.getKernelTime() + p.getUserTime();
-                    long oldcputime = old.getKernelTime() + old.getUserTime();
-                    cpu = ((cputime - oldcputime) * 100.0 / elapsed) / logicalProcessorCount;
-                }
+    // --- PERFORMANCE OPTIMIZATION PATCH START ---
+    // 1. Remove Thread.sleep from getSystemResources and use cached CPU load if available
+    private static class CpuLoadCache {
+        long[][] prevProcTicks;
+        long lastUpdate;
+        double[] lastCpuLoads;
+        final CentralProcessor processor;
+        CpuLoadCache(CentralProcessor processor) {
+            this.processor = processor;
+            this.prevProcTicks = processor.getProcessorCpuLoadTicks();
+            this.lastUpdate = System.currentTimeMillis();
+            this.lastCpuLoads = new double[processor.getLogicalProcessorCount()];
+        }
+        double[] getCpuLoads() {
+            long now = System.currentTimeMillis();
+            if (now - lastUpdate > 2000) { // Only update every 2s
+                lastCpuLoads = processor.getProcessorCpuLoadBetweenTicks(prevProcTicks);
+                prevProcTicks = processor.getProcessorCpuLoadTicks();
+                lastUpdate = now;
             }
-            
-            double rssMB = p.getResidentSetSize() / (1024.0 * 1024);
-            double virtualMemMB = p.getVirtualSize() / (1024.0 * 1024);
-            double diskReadMB = p.getBytesRead() / (1024.0 * 1024);
-        
-            result.add(new ProcessInfo(
-                p.getName(),
-                p.getUser(),
-                String.valueOf(p.getProcessID()),
-                Math.max(0.0, cpu),
-                rssMB,
-                virtualMemMB,
-                diskReadMB
-            ));
+            return lastCpuLoads;
         }
-        
-        previousProcessMap.clear();
-        for (OSProcess p : processes) {
-            previousProcessMap.put(p.getProcessID(), p);
-        }
-        previousTimestamp = currentTimestamp;
-        
-        return result;
     }
-
-    private List<StartupInfo> getStartupApplications() {
-        List<StartupInfo> startupApps = new ArrayList<>();
-        String osName = System.getProperty("os.name").toLowerCase();
-
-        if (osName.contains("win")) {
-            String userStartupFolder = System.getenv("APPDATA") + "\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
-            String allUsersStartupFolder = System.getenv("PROGRAMDATA") + "\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
-            startupApps.addAll(getStartupAppsFromFolder(userStartupFolder));
-            startupApps.addAll(getStartupAppsFromFolder(allUsersStartupFolder));
-        } else if (osName.contains("linux")) {
-            String userAutostartFolder = System.getProperty("user.home") + "/.config/autostart";
-            String systemAutostartFolder = "/etc/xdg/autostart";
-            startupApps.addAll(getStartupAppsFromFolder(userAutostartFolder));
-            startupApps.addAll(getStartupAppsFromFolder(systemAutostartFolder));
-            
-            SystemdStartupDetector systemdDetector = new SystemdStartupDetector();
-            startupApps.addAll(systemdDetector.getSystemdStartupServices());
-            
-            startupApps.addAll(systemdDetector.getCronJobsAtReboot());
-            
-            startupApps.addAll(systemdDetector.getRcLocalEntries());
-        }
-
-        return startupApps;
-    }
-
-    private List<StartupInfo> getStartupAppsFromFolder(String folderPath) {
-        List<StartupInfo> apps = new ArrayList<>();
-        File folder = new File(folderPath);
-        if (folder.exists() && folder.isDirectory()) {
-            File[] files = folder.listFiles((dir, name) -> name.endsWith(".desktop") || name.endsWith(".lnk"));
-            if (files != null) {
-                for (File file : files) {
-                    apps.add(new StartupInfo(file.getName(), file.getAbsolutePath()));
-                }
-            }
-        }
-        return apps;
-    }
-
+    private CpuLoadCache cpuLoadCache = null;
+    // ... existing code ...
     private List<ResourceInfo> getSystemResources() {
         List<ResourceInfo> resources = new ArrayList<>();
         SystemInfo si = new SystemInfo();
         HardwareAbstractionLayer hardware = si.getHardware();
-        
-        CentralProcessor processor = hardware.getProcessor();
-        long[][] prevProcTicks = processor.getProcessorCpuLoadTicks();
-        // Wait a second...
-        try {
-            Thread.sleep(1000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return resources; // Or handle error appropriately
+        if (cpuLoadCache == null) {
+            cpuLoadCache = new CpuLoadCache(hardware.getProcessor());
         }
-        double[] cpuLoads = processor.getProcessorCpuLoadBetweenTicks(prevProcTicks);
-        
+        double[] cpuLoads = cpuLoadCache.getCpuLoads();
         for (int i = 0; i < cpuLoads.length; i++) {
             double coreLoad = cpuLoads[i] * 100;
             resources.add(new ResourceInfo(
@@ -366,7 +294,6 @@ public class SystemInfoTable extends Application {
                 coreLoad
             ));
         }
-        
         GlobalMemory memory = hardware.getMemory();
         long totalMemory = memory.getTotal();
         long availableMemory = memory.getAvailable();
@@ -379,7 +306,6 @@ public class SystemInfoTable extends Application {
             String.format("%.2f GB", totalMemory / 1e9),
             memoryUsagePercent
         ));
-        
         long totalSwap = memory.getVirtualMemory().getSwapTotal();
         long usedSwap = memory.getVirtualMemory().getSwapUsed();
         double swapUsagePercent = totalSwap > 0 ? (double)usedSwap / totalSwap * 100.0 : 0.0;
@@ -390,15 +316,36 @@ public class SystemInfoTable extends Application {
             String.format("%.2f GB", totalSwap / 1e9),
             swapUsagePercent
         ));
-        
         return resources;
     }
-    
+    // ... existing code ...
+    // 2. Increase refresh interval for main data (was 1s, now 3s)
+    private void startAutoRefresh() {
+        refreshTimeline = new Timeline(new KeyFrame(Duration.seconds(1), e -> {
+            refreshProcessData();
+            refreshResourceData();
+            refreshFileSystemData();
+        }));
+        refreshTimeline.setCycleCount(Timeline.INDEFINITE);
+        refreshTimeline.play();
+        // Keep startup data refresh at 60 seconds
+        Timeline startupRefreshTimeline = new Timeline(new KeyFrame(Duration.seconds(60), e -> {
+            refreshStartupData();
+        }));
+        startupRefreshTimeline.setCycleCount(Timeline.INDEFINITE);
+        startupRefreshTimeline.play();
+    }
+    // 3. Cache file system and startup data for 1 minute to avoid frequent heavy scans
+    private long lastFileSystemFetch = 0;
+    private List<FileSystemInfo> lastFileSystemCache = new ArrayList<>();
     private List<FileSystemInfo> getFileSystemInfo() {
+        long now = System.currentTimeMillis();
+        if (now - lastFileSystemFetch < 60000 && !lastFileSystemCache.isEmpty()) {
+            return lastFileSystemCache;
+        }
         List<FileSystemInfo> filesystems = new ArrayList<>();
         SystemInfo si = new SystemInfo();
         FileSystem fileSystem = si.getOperatingSystem().getFileSystem();
-        
         for (OSFileStore fs : fileSystem.getFileStores()) {
             String mountPoint = fs.getMount();
             String name = fs.getName();
@@ -406,7 +353,6 @@ public class SystemInfoTable extends Application {
             long totalSpace = fs.getTotalSpace();
             long usableSpace = fs.getUsableSpace();
             long usedSpace = totalSpace - usableSpace;
-            
             filesystems.add(new FileSystemInfo(
                 mountPoint,
                 name,
@@ -416,10 +362,39 @@ public class SystemInfoTable extends Application {
                 usableSpace
             ));
         }
-        
+        lastFileSystemCache = filesystems;
+        lastFileSystemFetch = now;
         return filesystems;
     }
-    
+    private long lastStartupFetch = 0;
+    private List<StartupInfo> lastStartupCache = new ArrayList<>();
+    private List<StartupInfo> getStartupApplications() {
+        long now = System.currentTimeMillis();
+        if (now - lastStartupFetch < 60000 && !lastStartupCache.isEmpty()) {
+            return lastStartupCache;
+        }
+        List<StartupInfo> startupApps = new ArrayList<>();
+        String osName = System.getProperty("os.name").toLowerCase();
+        if (osName.contains("win")) {
+            String userStartupFolder = System.getenv("APPDATA") + "\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
+            String allUsersStartupFolder = System.getenv("PROGRAMDATA") + "\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
+            startupApps.addAll(getStartupAppsFromFolder(userStartupFolder));
+            startupApps.addAll(getStartupAppsFromFolder(allUsersStartupFolder));
+        } else if (osName.contains("linux")) {
+            String userAutostartFolder = System.getProperty("user.home") + "/.config/autostart";
+            String systemAutostartFolder = "/etc/xdg/autostart";
+            startupApps.addAll(getStartupAppsFromFolder(userAutostartFolder));
+            startupApps.addAll(getStartupAppsFromFolder(systemAutostartFolder));
+            SystemdStartupDetector systemdDetector = new SystemdStartupDetector();
+            startupApps.addAll(systemdDetector.getSystemdStartupServices());
+            startupApps.addAll(systemdDetector.getCronJobsAtReboot());
+            startupApps.addAll(systemdDetector.getRcLocalEntries());
+        }
+        lastStartupCache = startupApps;
+        lastStartupFetch = now;
+        return startupApps;
+    }
+    // 4. Only update changed process/resource data in refreshProcessData/refreshResourceData
     private void refreshProcessData() {
         Task<List<ProcessInfo>> task = new Task<List<ProcessInfo>>() {
             @Override
@@ -427,10 +402,12 @@ public class SystemInfoTable extends Application {
                 return getProcessInfoFromOSHI();
             }
         };
-        
         task.setOnSucceeded(e -> {
             List<ProcessInfo> newData = task.getValue();
             Platform.runLater(() -> {
+                if (!processData.equals(newData)) {
+                    processData.setAll(newData);
+                }
                 // Save currently selected process PID if any
                 ProcessInfo selectedProcess = processTable != null ? processTable.getSelectionModel().getSelectedItem() : null;
                 String selectedPid = selectedProcess != null ? selectedProcess.getPid() : null;
@@ -444,10 +421,6 @@ public class SystemInfoTable extends Application {
                         currentSortTypes.add(col.getSortType());
                     }
                 }
-                
-                // Update data
-                processData.clear();
-                processData.addAll(newData);
                 
                 // Temporarily disable selection events during update
                 processTable.getSelectionModel().clearSelection();
@@ -490,14 +463,11 @@ public class SystemInfoTable extends Application {
                 }
             });
         });
-        
         task.setOnFailed(e -> {
             System.err.println("Failed to refresh process data: " + task.getException().getMessage());
         });
-        
         new Thread(task).start();
     }
-    
     private void refreshResourceData() {
         Task<List<ResourceInfo>> task = new Task<List<ResourceInfo>>() {
             @Override
@@ -505,27 +475,87 @@ public class SystemInfoTable extends Application {
                 return getSystemResources();
             }
         };
-        
         task.setOnSucceeded(e -> {
             List<ResourceInfo> newData = task.getValue();
             Platform.runLater(() -> {
-                resourceData.clear();
-                resourceData.addAll(newData);
-                
+                if (!resourceData.equals(newData)) {
+                    resourceData.setAll(newData);
+                }
                 // Update charts if they exist
                 if (cpuLineChart != null && memoryLineChart != null && swapLineChart != null) {
                     updateCharts(newData);
                 }
             });
         });
-        
         task.setOnFailed(e -> {
             System.err.println("Failed to refresh resource data: " + task.getException().getMessage());
         });
-        
         new Thread(task).start();
     }
-    
+    // --- PERFORMANCE OPTIMIZATION PATCH END ---
+
+    // --- NEAR REAL-TIME OPTIMIZATION PATCH START ---
+    // Limit the process table to show only the top 20 processes by CPU usage
+    private static final int MAX_PROCESSES_DISPLAYED = 20;
+    private List<ProcessInfo> getProcessInfoFromOSHI() {
+        SystemInfo si = new SystemInfo();
+        OperatingSystem os = si.getOperatingSystem();
+        HardwareAbstractionLayer hardware = si.getHardware();
+        CentralProcessor processor = hardware.getProcessor();
+        int logicalProcessorCount = processor.getLogicalProcessorCount();
+
+        // Get only the top N processes by CPU usage
+        List<OSProcess> processes = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, MAX_PROCESSES_DISPLAYED);
+        long currentTimestamp = System.currentTimeMillis();
+        List<ProcessInfo> result = new ArrayList<>();
+        for (OSProcess p : processes) {
+            double cpu = 0.0;
+            if (previousProcessMap.containsKey(p.getProcessID()) && previousTimestamp > 0) {
+                OSProcess old = previousProcessMap.get(p.getProcessID());
+                long elapsed = currentTimestamp - previousTimestamp;
+                if (elapsed > 0) {
+                    long cputime = p.getKernelTime() + p.getUserTime();
+                    long oldcputime = old.getKernelTime() + old.getUserTime();
+                    cpu = ((cputime - oldcputime) * 100.0 / elapsed) / logicalProcessorCount;
+                }
+            }
+            double rssMB = p.getResidentSetSize() / (1024.0 * 1024);
+            double virtualMemMB = p.getVirtualSize() / (1024.0 * 1024);
+            double diskReadMB = p.getBytesRead() / (1024.0 * 1024);
+            result.add(new ProcessInfo(
+                p.getName(),
+                p.getUser(),
+                String.valueOf(p.getProcessID()),
+                Math.max(0.0, cpu),
+                rssMB,
+                virtualMemMB,
+                diskReadMB
+            ));
+        }
+        previousProcessMap.clear();
+        for (OSProcess p : processes) {
+            previousProcessMap.put(p.getProcessID(), p);
+        }
+        previousTimestamp = currentTimestamp;
+        return result;
+    }
+    // --- NEAR REAL-TIME OPTIMIZATION PATCH END ---
+
+    // ... existing getProcessInfoFromOSHI, getStartupApplications, getStartupAppsFromFolder ...
+    private List<StartupInfo> getStartupAppsFromFolder(String folderPath) {
+        List<StartupInfo> apps = new ArrayList<>();
+        File folder = new File(folderPath);
+        if (folder.exists() && folder.isDirectory()) {
+            File[] files = folder.listFiles((dir, name) -> name.endsWith(".desktop") || name.endsWith(".lnk"));
+            if (files != null) {
+                for (File file : files) {
+                    apps.add(new StartupInfo(file.getName(), file.getAbsolutePath()));
+                }
+            }
+        }
+        return apps;
+    }
+
     private void updateCharts(List<ResourceInfo> resources) {
         // Calculate overall CPU usage as average of all cores
         double totalCpuUsage = 0.0;
@@ -701,159 +731,6 @@ public class SystemInfoTable extends Application {
         });
 
         new Thread(task).start();
-    }
-    
-    private void startAutoRefresh() {
-        refreshTimeline = new Timeline(new KeyFrame(Duration.seconds(1), e -> { // Ensure this is 1 second
-            refreshProcessData();
-            refreshResourceData(); 
-            refreshFileSystemData();
-        }));
-        refreshTimeline.setCycleCount(Timeline.INDEFINITE);
-        refreshTimeline.play();
-        
-        // Refresh startup data every 30 seconds (since it changes less frequently)
-        Timeline startupRefreshTimeline = new Timeline(new KeyFrame(Duration.seconds(30), e -> {
-            refreshStartupData();
-        }));
-        startupRefreshTimeline.setCycleCount(Timeline.INDEFINITE);
-        startupRefreshTimeline.play();
-    }
-
-    private VBox createResourceCharts() {
-        GridPane gridPane = new GridPane();
-        gridPane.setPadding(new Insets(10));
-        gridPane.setHgap(10);
-        gridPane.setVgap(10);
-        gridPane.setAlignment(Pos.CENTER);
-
-        // CPU Usage Line Chart
-        CategoryAxis cpuXAxis = new CategoryAxis();
-        cpuXAxis.setLabel("Time");
-        cpuXAxis.setTickLabelsVisible(false);
-        NumberAxis cpuYAxis = new NumberAxis(0, 100, 10);
-        cpuYAxis.setLabel("CPU Usage (%)");
-        cpuLineChart = new LineChart<>(cpuXAxis, cpuYAxis);
-        cpuLineChart.setTitle("CPU Usage History");
-        cpuLineChart.setAnimated(false);
-        cpuLineChart.setCreateSymbols(false);
-        cpuLineChart.setPrefHeight(250);
-        cpuLineChart.setPrefWidth(300);
-        
-        cpuHistorySeries.setName("CPU Usage");
-        cpuLineChart.getData().add(cpuHistorySeries);
-
-        // Memory Usage Line Chart
-        CategoryAxis memoryXAxis = new CategoryAxis();
-        memoryXAxis.setLabel("Time");
-        memoryXAxis.setTickLabelsVisible(false);
-        NumberAxis memoryYAxis = new NumberAxis(0, 100, 10);
-        memoryYAxis.setLabel("Memory Usage (%)");
-        memoryLineChart = new LineChart<>(memoryXAxis, memoryYAxis);
-        memoryLineChart.setTitle("Memory Usage History");
-        memoryLineChart.setAnimated(false);
-        memoryLineChart.setCreateSymbols(false);
-        memoryLineChart.setPrefHeight(250);
-        memoryLineChart.setPrefWidth(300);
-        
-        memoryHistorySeries.setName("Memory Usage");
-        memoryLineChart.getData().add(memoryHistorySeries);
-
-        // Swap Usage Line Chart
-        CategoryAxis swapXAxis = new CategoryAxis();
-        swapXAxis.setLabel("Time");
-        swapXAxis.setTickLabelsVisible(false);
-        NumberAxis swapYAxis = new NumberAxis(0, 100, 10);
-        swapYAxis.setLabel("Swap Usage (%)");
-        swapLineChart = new LineChart<>(swapXAxis, swapYAxis);
-        swapLineChart.setTitle("Swap Usage History");
-        swapLineChart.setAnimated(false);
-        swapLineChart.setCreateSymbols(false);
-        swapLineChart.setPrefHeight(250);
-        swapLineChart.setPrefWidth(300);
-        
-        swapHistorySeries.setName("Swap Usage");
-        swapLineChart.getData().add(swapHistorySeries);
-
-        cpuTableView = new TableView<>();
-        cpuTableView.setItems(cpuCoreData);
-        cpuTableView.setPrefHeight(200);
-        cpuTableView.getStyleClass().add("cpu-core-table");
-
-        TableColumn<ResourceInfo, String> coreNameCol = new TableColumn<>("Core");
-        coreNameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
-        coreNameCol.setPrefWidth(120);
-
-        TableColumn<ResourceInfo, Double> usageCol = new TableColumn<>("Usage (%)");
-        usageCol.setCellValueFactory(cellData -> new javafx.beans.property.SimpleDoubleProperty(cellData.getValue().getUsedPercent()).asObject());
-        usageCol.setPrefWidth(160);
-        usageCol.setCellFactory(col -> new javafx.scene.control.TableCell<ResourceInfo, Double>() {
-            private final javafx.scene.control.ProgressBar bar = new javafx.scene.control.ProgressBar();
-            @Override
-            protected void updateItem(Double value, boolean empty) {
-                super.updateItem(value, empty);
-                if (empty || value == null) {
-                    setGraphic(null);
-                    setText(null);
-                } else {
-                    double percent = value / 100.0;
-                    bar.setProgress(percent);
-                    bar.setPrefWidth(100);
-                    // Color code: green <40, yellow <70, orange <90, red >=90
-                    String color;
-                    if (value < 40) color = "#4caf50"; // green
-                    else if (value < 70) color = "#ffeb3b"; // yellow
-                    else if (value < 90) color = "#ff9800"; // orange
-                    else color = "#f44336"; // red
-                    bar.setStyle("-fx-accent: " + color + ";");
-                    setGraphic(bar);
-                    setText(String.format("%.2f%%", value));
-                }
-            }
-        });
-
-        TableColumn<ResourceInfo, String> statusCol = new TableColumn<>("Status");
-        statusCol.setCellValueFactory(new PropertyValueFactory<>("status"));
-        statusCol.setPrefWidth(100);
-        statusCol.setCellFactory(col -> new javafx.scene.control.TableCell<ResourceInfo, String>() {
-            @Override
-            protected void updateItem(String status, boolean empty) {
-                super.updateItem(status, empty);
-                if (empty || status == null) {
-                    setText(null);
-                    setStyle("");
-                } else {
-                    setText(status);
-                    String bg;
-                    switch (status) {
-                        case "Low": bg = "#4caf50"; break; // green
-                        case "Medium": bg = "#ffeb3b"; break; // yellow
-                        case "High": bg = "#f44336"; break; // red
-                        default: bg = "#ffffff"; break;
-                    }
-                    setStyle("-fx-background-color: " + bg + "; -fx-text-fill: black;");
-                }
-            }
-        });
-        cpuTableView.getColumns().addAll(coreNameCol, usageCol, statusCol);
-
-        // Add to grid: row 0 (charts)
-        gridPane.add(cpuLineChart, 0, 0);       // CPU Chart
-        gridPane.add(memoryLineChart, 1, 0);    // Memory Chart
-        gridPane.add(swapLineChart, 2, 0);      // Swap Chart
-        // Add to grid: row 1 (table)
-        gridPane.add(cpuTableView, 0, 1, 3, 1); // Table spans all 3 columns
-
-        // Set column constraints for 3 equal columns
-        for (int i = 0; i < 3; i++) {
-            ColumnConstraints col = new ColumnConstraints();
-            col.setPercentWidth(33.33);
-            gridPane.getColumnConstraints().add(col);
-        }
-
-        VBox container = new VBox(gridPane);
-        container.setAlignment(Pos.CENTER);
-        return container;
     }
     
     @Override
@@ -1069,6 +946,142 @@ public class SystemInfoTable extends Application {
                 alert.showAndWait();
             });
         }
+    }
+
+    private VBox createResourceCharts() {
+        GridPane gridPane = new GridPane();
+        gridPane.setPadding(new Insets(10));
+        gridPane.setHgap(10);
+        gridPane.setVgap(10);
+        gridPane.setAlignment(Pos.CENTER);
+
+        // CPU Usage Line Chart
+        CategoryAxis cpuXAxis = new CategoryAxis();
+        cpuXAxis.setLabel("Time");
+        cpuXAxis.setTickLabelsVisible(false);
+        NumberAxis cpuYAxis = new NumberAxis(0, 100, 10);
+        cpuYAxis.setLabel("CPU Usage (%)");
+        cpuLineChart = new LineChart<>(cpuXAxis, cpuYAxis);
+        cpuLineChart.setTitle("CPU Usage History");
+        cpuLineChart.setAnimated(false);
+        cpuLineChart.setCreateSymbols(false);
+        cpuLineChart.setPrefHeight(250);
+        cpuLineChart.setPrefWidth(300);
+        
+        cpuHistorySeries.setName("CPU Usage");
+        cpuLineChart.getData().add(cpuHistorySeries);
+
+        // Memory Usage Line Chart
+        CategoryAxis memoryXAxis = new CategoryAxis();
+        memoryXAxis.setLabel("Time");
+        memoryXAxis.setTickLabelsVisible(false);
+        NumberAxis memoryYAxis = new NumberAxis(0, 100, 10);
+        memoryYAxis.setLabel("Memory Usage (%)");
+        memoryLineChart = new LineChart<>(memoryXAxis, memoryYAxis);
+        memoryLineChart.setTitle("Memory Usage History");
+        memoryLineChart.setAnimated(false);
+        memoryLineChart.setCreateSymbols(false);
+        memoryLineChart.setPrefHeight(250);
+        memoryLineChart.setPrefWidth(300);
+        
+        memoryHistorySeries.setName("Memory Usage");
+        memoryLineChart.getData().add(memoryHistorySeries);
+
+        // Swap Usage Line Chart
+        CategoryAxis swapXAxis = new CategoryAxis();
+        swapXAxis.setLabel("Time");
+        swapXAxis.setTickLabelsVisible(false);
+        NumberAxis swapYAxis = new NumberAxis(0, 100, 10);
+        swapYAxis.setLabel("Swap Usage (%)");
+        swapLineChart = new LineChart<>(swapXAxis, swapYAxis);
+        swapLineChart.setTitle("Swap Usage History");
+        swapLineChart.setAnimated(false);
+        swapLineChart.setCreateSymbols(false);
+        swapLineChart.setPrefHeight(250);
+        swapLineChart.setPrefWidth(300);
+        
+        swapHistorySeries.setName("Swap Usage");
+        swapLineChart.getData().add(swapHistorySeries);
+
+        cpuTableView = new TableView<>();
+        cpuTableView.setItems(cpuCoreData);
+        cpuTableView.setPrefHeight(200);
+        cpuTableView.getStyleClass().add("cpu-core-table");
+
+        TableColumn<ResourceInfo, String> coreNameCol = new TableColumn<>("Core");
+        coreNameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        coreNameCol.setPrefWidth(120);
+
+        TableColumn<ResourceInfo, Double> usageCol = new TableColumn<>("Usage (%)");
+        usageCol.setCellValueFactory(cellData -> new javafx.beans.property.SimpleDoubleProperty(cellData.getValue().getUsedPercent()).asObject());
+        usageCol.setPrefWidth(160);
+        usageCol.setCellFactory(col -> new javafx.scene.control.TableCell<ResourceInfo, Double>() {
+            private final javafx.scene.control.ProgressBar bar = new javafx.scene.control.ProgressBar();
+            @Override
+            protected void updateItem(Double value, boolean empty) {
+                super.updateItem(value, empty);
+                if (empty || value == null) {
+                    setGraphic(null);
+                    setText(null);
+                } else {
+                    double percent = value / 100.0;
+                    bar.setProgress(percent);
+                    bar.setPrefWidth(100);
+                    // Color code: green <40, yellow <70, orange <90, red >=90
+                    String color;
+                    if (value < 40) color = "#4caf50"; // green
+                    else if (value < 70) color = "#ffeb3b"; // yellow
+                    else if (value < 90) color = "#ff9800"; // orange
+                    else color = "#f44336"; // red
+                    bar.setStyle("-fx-accent: " + color + ";");
+                    setGraphic(bar);
+                    setText(String.format("%.2f%%", value));
+                }
+            }
+        });
+
+        TableColumn<ResourceInfo, String> statusCol = new TableColumn<>("Status");
+        statusCol.setCellValueFactory(new PropertyValueFactory<>("status"));
+        statusCol.setPrefWidth(100);
+        statusCol.setCellFactory(col -> new javafx.scene.control.TableCell<ResourceInfo, String>() {
+            @Override
+            protected void updateItem(String status, boolean empty) {
+                super.updateItem(status, empty);
+                if (empty || status == null) {
+                    setText(null);
+                    setStyle("");
+                } else {
+                    setText(status);
+                    String bg;
+                    switch (status) {
+                        case "Low": bg = "#4caf50"; break; // green
+                        case "Medium": bg = "#ffeb3b"; break; // yellow
+                        case "High": bg = "#f44336"; break; // red
+                        default: bg = "#ffffff"; break;
+                    }
+                    setStyle("-fx-background-color: " + bg + "; -fx-text-fill: black;");
+                }
+            }
+        });
+        cpuTableView.getColumns().addAll(coreNameCol, usageCol, statusCol);
+
+        // Add to grid: row 0 (charts)
+        gridPane.add(cpuLineChart, 0, 0);       // CPU Chart
+        gridPane.add(memoryLineChart, 1, 0);    // Memory Chart
+        gridPane.add(swapLineChart, 2, 0);      // Swap Chart
+        // Add to grid: row 1 (table)
+        gridPane.add(cpuTableView, 0, 1, 3, 1); // Table spans all 3 columns
+
+        // Set column constraints for 3 equal columns
+        for (int i = 0; i < 3; i++) {
+            ColumnConstraints col = new ColumnConstraints();
+            col.setPercentWidth(33.33);
+            gridPane.getColumnConstraints().add(col);
+        }
+
+        VBox container = new VBox(gridPane);
+        container.setAlignment(Pos.CENTER);
+        return container;
     }
 
     public static void main(String[] args) {
