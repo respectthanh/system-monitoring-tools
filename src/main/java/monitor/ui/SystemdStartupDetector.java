@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import monitor.ui.SystemInfoTable.StartupInfo;
+import monitor.ui.model.StartupInfo;
 
 public class SystemdStartupDetector {
     private static final Set<String> DEFAULT_SYSTEMD_UNITS = new HashSet<>(Arrays.asList(

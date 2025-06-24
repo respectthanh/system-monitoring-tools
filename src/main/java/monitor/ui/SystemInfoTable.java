@@ -1,10 +1,13 @@
 package monitor.ui;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+// Import new OOP model classes
+import monitor.ui.model.*;
+import monitor.ui.service.*;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -14,7 +17,7 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.concurrent.Task;
 import javafx.geometry.Insets;
-import javafx.geometry.Pos; // Ensured import
+import javafx.geometry.Pos;
 import javafx.scene.Scene;
 
 import javafx.scene.chart.CategoryAxis;
@@ -40,22 +43,28 @@ import javafx.scene.layout.GridPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import javafx.util.Duration;
-import oshi.SystemInfo;
-import oshi.hardware.CentralProcessor;
-import oshi.hardware.GlobalMemory;
-import oshi.hardware.HardwareAbstractionLayer;
-import oshi.software.os.FileSystem;
-import oshi.software.os.OSFileStore;
-import oshi.software.os.OSProcess;
-import oshi.software.os.OperatingSystem;
 
 public class SystemInfoTable extends Application {
+    // OOP Services - demonstrates Dependency Injection and Service Layer pattern
+    private final ProcessService processService;
+    private final ResourceMonitoringService resourceService;
+    private final FileSystemService fileSystemService;
+    private final StartupService startupService;
+    
     private final ObservableList<ProcessInfo> processData = FXCollections.observableArrayList();
     private final ObservableList<ResourceInfo> resourceData = FXCollections.observableArrayList();
     private final ObservableList<FileSystemInfo> fileSystemData = FXCollections.observableArrayList();
     private final ObservableList<ResourceInfo> cpuCoreData = FXCollections.observableArrayList();
     private final ObservableList<StartupInfo> startupData = FXCollections.observableArrayList();
     private TreeItem<StartupGroup> startupTreeRoot;
+    
+        // Constructor demonstrating Dependency Injection
+    public SystemInfoTable() {
+        this.processService = new ProcessService();
+        this.resourceService = new ResourceMonitoringService();
+        this.fileSystemService = new FileSystemService();
+        this.startupService = new StartupService();
+    }
     
     private Timeline refreshTimeline;
     
@@ -70,253 +79,12 @@ public class SystemInfoTable extends Application {
     private final XYChart.Series<String, Number> swapHistorySeries = new XYChart.Series<>();
     private static final int MAX_DATA_POINTS = 30; // Keep last 30 data points
 
-    private final Map<Integer, OSProcess> previousProcessMap = new HashMap<>();
-    private long previousTimestamp;
-    private TableView<ProcessInfo> processTable; // Thêm biến instance
-
-    // Inner class definitions (ensured they are present)
-    public static class ProcessInfo {
-        // ... existing ProcessInfo code ...
-        private final String name;
-        private final String user;
-        private final String pid;
-        private final String cpu;
-        private final Double cpuValue;
-        private final String rss;
-        private final Double rssValue; 
-        private final String virtualMem;
-        private final Double virtualMemValue;
-        private final String diskRead;
-        private final Double diskReadValue;
-
-        public ProcessInfo(String name, String user, String pid, 
-                          double cpuValue, double rssValue, 
-                          double virtualMemValue, double diskReadValue) {
-            this.name = name;
-            this.user = user;
-            this.pid = pid;
-            this.cpuValue = cpuValue;
-            this.cpu = String.format("%.2f", cpuValue);
-            this.rssValue = rssValue;
-            this.rss = String.format("%.2f", rssValue);
-            this.virtualMemValue = virtualMemValue;
-            this.virtualMem = String.format("%.2f", virtualMemValue);
-            this.diskReadValue = diskReadValue;
-            this.diskRead = String.format("%.2f", diskReadValue);
-        }
-
-        public String getName() { return name; }
-        public String getUser() { return user; }
-        public String getPid() { return pid; }
-        public String getCpu() { return cpu; }
-        public Double getCpuValue() { return cpuValue; }
-        public String getRss() { return rss; }
-        public Double getRssValue() { return rssValue; }
-        public String getVirtualMem() { return virtualMem; }
-        public Double getVirtualMemValue() { return virtualMemValue; }
-        public String getDiskRead() { return diskRead; }
-        public Double getDiskReadValue() { return diskReadValue; }
-        
-        @Override
-        public boolean equals(Object obj) {
-            if (this == obj) return true;
-            if (obj == null || getClass() != obj.getClass()) return false;
-            ProcessInfo that = (ProcessInfo) obj;
-            return pid.equals(that.pid);
-        }
-        
-        @Override
-        public int hashCode() {
-            return pid.hashCode();
-        }
-    }
-
-    public static class ResourceInfo {
-        private final String name;
-        private final String status;
-        private final String used;
-        private final String total;
-        private final double usedPercent; 
-
-        public ResourceInfo(String name, String status, String used, String total, double usedPercent) {
-            this.name = name;
-            this.status = status;
-            this.used = used;
-            this.total = total;
-            this.usedPercent = usedPercent;
-        }
-
-        public String getName() { return name; }
-        public String getStatus() { return status; }
-        public String getUsed() { return used; }
-        public String getTotal() { return total; }
-        public double getUsedPercent() { return usedPercent; }
-    }
-
-    public static class FileSystemInfo {
-        private final String mountPoint;
-        private final String name;
-        private final String type;
-        private final String totalSpace;
-        private final String usedSpace;
-        private final String usableSpace;
-
-        public FileSystemInfo(String mountPoint, String name, String type, long totalSpace, long usedSpace, long usableSpace) {
-            this.mountPoint = mountPoint;
-            this.name = name;
-            this.type = type;
-            this.totalSpace = String.format("%.2f GB", totalSpace / (1024.0 * 1024 * 1024));
-            this.usedSpace = String.format("%.2f GB", usedSpace / (1024.0 * 1024 * 1024));
-            this.usableSpace = String.format("%.2f GB", usableSpace / (1024.0 * 1024 * 1024));
-        }
-
-        public String getMountPoint() { return mountPoint; }
-        public String getName() { return name; }
-        public String getType() { return type; }
-        public String getTotalSpace() { return totalSpace; }
-        public String getUsedSpace() { return usedSpace; }
-        public String getUsableSpace() { return usableSpace; }
-    }
-    
-    public static class StartupInfo {
-        private final String name;
-        private final String path;
-
-        public StartupInfo(String name, String path) {
-            this.name = name;
-            this.path = path;
-        }
-
-        public String getName() { return name; }
-        public String getPath() { return path; }
-        
-        public String getDirectory() {
-            if (path.contains("/")) {
-                return path.substring(0, path.lastIndexOf('/'));
-            } else {
-                return "Unknown"; // Default directory for items without path separators
-            }
-        }
-    }
-    
-    // New class for grouped startup items
-    public static class StartupGroup {
-        private final String directoryPath;
-        private final String directoryName;
-        private final List<StartupInfo> items;
-        private final boolean isGroup;
-        
-        // Constructor for group (directory)
-        public StartupGroup(String directoryPath) {
-            this.directoryPath = directoryPath;
-            this.directoryName = directoryPath.contains("/") ? 
-                directoryPath.substring(directoryPath.lastIndexOf('/') + 1) : directoryPath;
-            this.items = new ArrayList<>();
-            this.isGroup = true;
-        }
-        
-        // Constructor for individual item
-        public StartupGroup(StartupInfo item) {
-            this.directoryPath = "";
-            this.directoryName = item.getName();
-            this.items = new ArrayList<>();
-            this.items.add(item);
-            this.isGroup = false;
-        }
-        
-        public void addItem(StartupInfo item) {
-            if (isGroup) {
-                items.add(item);
-            }
-        }
-        
-        public String getDisplayName() {
-            if (isGroup) {
-                return directoryName + " (" + items.size() + " items)";
-            } else {
-                return directoryName;
-            }
-        }
-        
-        public String getDisplayPath() {
-            if (isGroup) {
-                return directoryPath;
-            } else {
-                return items.isEmpty() ? "" : items.get(0).getPath();
-            }
-        }
-        
-        public boolean isGroup() { return isGroup; }
-        public List<StartupInfo> getItems() { return items; }
-        public String getDirectoryPath() { return directoryPath; }
-    }
+    private TableView<ProcessInfo> processTable;
 
     // --- PERFORMANCE OPTIMIZATION PATCH START ---
-    // 1. Remove Thread.sleep from getSystemResources and use cached CPU load if available
-    private static class CpuLoadCache {
-        long[][] prevProcTicks;
-        long lastUpdate;
-        double[] lastCpuLoads;
-        final CentralProcessor processor;
-        CpuLoadCache(CentralProcessor processor) {
-            this.processor = processor;
-            this.prevProcTicks = processor.getProcessorCpuLoadTicks();
-            this.lastUpdate = System.currentTimeMillis();
-            this.lastCpuLoads = new double[processor.getLogicalProcessorCount()];
-        }
-        double[] getCpuLoads() {
-            long now = System.currentTimeMillis();
-            if (now - lastUpdate > 2000) { // Only update every 2s
-                lastCpuLoads = processor.getProcessorCpuLoadBetweenTicks(prevProcTicks);
-                prevProcTicks = processor.getProcessorCpuLoadTicks();
-                lastUpdate = now;
-            }
-            return lastCpuLoads;
-        }
-    }
-    private CpuLoadCache cpuLoadCache = null;
-    // ... existing code ...
+    // Updated to use ResourceMonitoringService - demonstrates Service Layer pattern  
     private List<ResourceInfo> getSystemResources() {
-        List<ResourceInfo> resources = new ArrayList<>();
-        SystemInfo si = new SystemInfo();
-        HardwareAbstractionLayer hardware = si.getHardware();
-        if (cpuLoadCache == null) {
-            cpuLoadCache = new CpuLoadCache(hardware.getProcessor());
-        }
-        double[] cpuLoads = cpuLoadCache.getCpuLoads();
-        for (int i = 0; i < cpuLoads.length; i++) {
-            double coreLoad = cpuLoads[i] * 100;
-            resources.add(new ResourceInfo(
-                String.format("CPU Core %d", i), 
-                String.format("%.2f%%", coreLoad), 
-                coreLoad > 50 ? "High" : coreLoad > 20 ? "Medium" : "Low", 
-                "100%", 
-                coreLoad
-            ));
-        }
-        GlobalMemory memory = hardware.getMemory();
-        long totalMemory = memory.getTotal();
-        long availableMemory = memory.getAvailable();
-        long usedMemory = totalMemory - availableMemory;
-        double memoryUsagePercent = (double)usedMemory / totalMemory * 100.0;
-        resources.add(new ResourceInfo(
-            "Memory",
-            String.format("%.2f%%", memoryUsagePercent),
-            String.format("%.2f GB", usedMemory / 1e9),
-            String.format("%.2f GB", totalMemory / 1e9),
-            memoryUsagePercent
-        ));
-        long totalSwap = memory.getVirtualMemory().getSwapTotal();
-        long usedSwap = memory.getVirtualMemory().getSwapUsed();
-        double swapUsagePercent = totalSwap > 0 ? (double)usedSwap / totalSwap * 100.0 : 0.0;
-        resources.add(new ResourceInfo(
-            "Swap",
-            String.format("%.2f%%", swapUsagePercent),
-            String.format("%.2f GB", usedSwap / 1e9),
-            String.format("%.2f GB", totalSwap / 1e9),
-            swapUsagePercent
-        ));
-        return resources;
+        return resourceService.getSystemResources();
     }
     // ... existing code ...
     // 2. Increase refresh interval for main data (was 1s, now 3s)
@@ -335,64 +103,13 @@ public class SystemInfoTable extends Application {
         startupRefreshTimeline.setCycleCount(Timeline.INDEFINITE);
         startupRefreshTimeline.play();
     }
-    // 3. Cache file system and startup data for 1 minute to avoid frequent heavy scans
-    private long lastFileSystemFetch = 0;
-    private List<FileSystemInfo> lastFileSystemCache = new ArrayList<>();
+    // 3. Updated to use FileSystemService and StartupService - demonstrates Service Layer pattern
     private List<FileSystemInfo> getFileSystemInfo() {
-        long now = System.currentTimeMillis();
-        if (now - lastFileSystemFetch < 60000 && !lastFileSystemCache.isEmpty()) {
-            return lastFileSystemCache;
-        }
-        List<FileSystemInfo> filesystems = new ArrayList<>();
-        SystemInfo si = new SystemInfo();
-        FileSystem fileSystem = si.getOperatingSystem().getFileSystem();
-        for (OSFileStore fs : fileSystem.getFileStores()) {
-            String mountPoint = fs.getMount();
-            String name = fs.getName();
-            String type = fs.getType();
-            long totalSpace = fs.getTotalSpace();
-            long usableSpace = fs.getUsableSpace();
-            long usedSpace = totalSpace - usableSpace;
-            filesystems.add(new FileSystemInfo(
-                mountPoint,
-                name,
-                type,
-                totalSpace,
-                usedSpace,
-                usableSpace
-            ));
-        }
-        lastFileSystemCache = filesystems;
-        lastFileSystemFetch = now;
-        return filesystems;
+        return fileSystemService.getFileSystemInfo();
     }
-    private long lastStartupFetch = 0;
-    private List<StartupInfo> lastStartupCache = new ArrayList<>();
+    
     private List<StartupInfo> getStartupApplications() {
-        long now = System.currentTimeMillis();
-        if (now - lastStartupFetch < 60000 && !lastStartupCache.isEmpty()) {
-            return lastStartupCache;
-        }
-        List<StartupInfo> startupApps = new ArrayList<>();
-        String osName = System.getProperty("os.name").toLowerCase();
-        if (osName.contains("win")) {
-            String userStartupFolder = System.getenv("APPDATA") + "\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
-            String allUsersStartupFolder = System.getenv("PROGRAMDATA") + "\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
-            startupApps.addAll(getStartupAppsFromFolder(userStartupFolder));
-            startupApps.addAll(getStartupAppsFromFolder(allUsersStartupFolder));
-        } else if (osName.contains("linux")) {
-            String userAutostartFolder = System.getProperty("user.home") + "/.config/autostart";
-            String systemAutostartFolder = "/etc/xdg/autostart";
-            startupApps.addAll(getStartupAppsFromFolder(userAutostartFolder));
-            startupApps.addAll(getStartupAppsFromFolder(systemAutostartFolder));
-            SystemdStartupDetector systemdDetector = new SystemdStartupDetector();
-            startupApps.addAll(systemdDetector.getSystemdStartupServices());
-            startupApps.addAll(systemdDetector.getCronJobsAtReboot());
-            startupApps.addAll(systemdDetector.getRcLocalEntries());
-        }
-        lastStartupCache = startupApps;
-        lastStartupFetch = now;
-        return startupApps;
+        return startupService.getStartupApplications();
     }
     // 4. Only update changed process/resource data in refreshProcessData/refreshResourceData
     private void refreshProcessData() {
@@ -494,66 +211,9 @@ public class SystemInfoTable extends Application {
     }
     // --- PERFORMANCE OPTIMIZATION PATCH END ---
 
-    // --- NEAR REAL-TIME OPTIMIZATION PATCH START ---
-    // Limit the process table to show only the top 20 processes by CPU usage
-    private static final int MAX_PROCESSES_DISPLAYED = 20;
+    // Updated to use ProcessService - demonstrates Service Layer pattern
     private List<ProcessInfo> getProcessInfoFromOSHI() {
-        SystemInfo si = new SystemInfo();
-        OperatingSystem os = si.getOperatingSystem();
-        HardwareAbstractionLayer hardware = si.getHardware();
-        CentralProcessor processor = hardware.getProcessor();
-        int logicalProcessorCount = processor.getLogicalProcessorCount();
-
-        // Get only the top N processes by CPU usage
-        List<OSProcess> processes = os.getProcesses(null, OperatingSystem.ProcessSorting.CPU_DESC, MAX_PROCESSES_DISPLAYED);
-        long currentTimestamp = System.currentTimeMillis();
-        List<ProcessInfo> result = new ArrayList<>();
-        for (OSProcess p : processes) {
-            double cpu = 0.0;
-            if (previousProcessMap.containsKey(p.getProcessID()) && previousTimestamp > 0) {
-                OSProcess old = previousProcessMap.get(p.getProcessID());
-                long elapsed = currentTimestamp - previousTimestamp;
-                if (elapsed > 0) {
-                    long cputime = p.getKernelTime() + p.getUserTime();
-                    long oldcputime = old.getKernelTime() + old.getUserTime();
-                    cpu = ((cputime - oldcputime) * 100.0 / elapsed) / logicalProcessorCount;
-                }
-            }
-            double rssMB = p.getResidentSetSize() / (1024.0 * 1024);
-            double virtualMemMB = p.getVirtualSize() / (1024.0 * 1024);
-            double diskReadMB = p.getBytesRead() / (1024.0 * 1024);
-            result.add(new ProcessInfo(
-                p.getName(),
-                p.getUser(),
-                String.valueOf(p.getProcessID()),
-                Math.max(0.0, cpu),
-                rssMB,
-                virtualMemMB,
-                diskReadMB
-            ));
-        }
-        previousProcessMap.clear();
-        for (OSProcess p : processes) {
-            previousProcessMap.put(p.getProcessID(), p);
-        }
-        previousTimestamp = currentTimestamp;
-        return result;
-    }
-    // --- NEAR REAL-TIME OPTIMIZATION PATCH END ---
-
-    // ... existing getProcessInfoFromOSHI, getStartupApplications, getStartupAppsFromFolder ...
-    private List<StartupInfo> getStartupAppsFromFolder(String folderPath) {
-        List<StartupInfo> apps = new ArrayList<>();
-        File folder = new File(folderPath);
-        if (folder.exists() && folder.isDirectory()) {
-            File[] files = folder.listFiles((dir, name) -> name.endsWith(".desktop") || name.endsWith(".lnk"));
-            if (files != null) {
-                for (File file : files) {
-                    apps.add(new StartupInfo(file.getName(), file.getAbsolutePath()));
-                }
-            }
-        }
-        return apps;
+        return processService.getTopProcesses();
     }
 
     private void updateCharts(List<ResourceInfo> resources) {
@@ -585,6 +245,10 @@ public class SystemInfoTable extends Application {
         Platform.runLater(() -> {
             cpuCoreData.clear();
             cpuCoreData.addAll(cpuCores);
+            // Also update with latest CPU core data from service
+            List<ResourceInfo> latestCpuCores = resourceService.getCpuCoreData();
+            cpuCoreData.clear();
+            cpuCoreData.addAll(latestCpuCores);
         });
         
         // Add data points to line charts with timestamp
@@ -790,20 +454,35 @@ public class SystemInfoTable extends Application {
         endProcessItem.setOnAction(event -> {
             ProcessInfo selectedProcess = processTable.getSelectionModel().getSelectedItem();
             if (selectedProcess != null) {
-                // Show confirmation dialog
+                // Show confirmation dialog using service
                 Alert confirmAlert = new Alert(Alert.AlertType.CONFIRMATION);
                 confirmAlert.setTitle("Confirm Process Termination");
                 confirmAlert.setHeaderText("End Process");
-                confirmAlert.setContentText("Are you sure you want to terminate process '" 
-                    + selectedProcess.getName() + "' (PID: " + selectedProcess.getPid() + ")?");
+                confirmAlert.setContentText(processService.getTerminationConfirmMessage(selectedProcess));
                 
                 confirmAlert.showAndWait().ifPresent(response -> {
                     if (response == ButtonType.OK) {
-                        // Run kill process in background thread
+                        // Run kill process in background thread using service
                         Task<Void> killTask = new Task<Void>() {
                             @Override
                             protected Void call() throws Exception {
-                                killProcess(selectedProcess.getPid());
+                                boolean success = processService.terminateProcess(selectedProcess);
+                                Platform.runLater(() -> {
+                                    Alert alert;
+                                    if (success) {
+                                        alert = new Alert(Alert.AlertType.INFORMATION);
+                                        alert.setTitle("Process Terminated");
+                                        alert.setHeaderText("Success");
+                                        alert.setContentText("Process has been terminated successfully.");
+                                    } else {
+                                        alert = new Alert(Alert.AlertType.ERROR);
+                                        alert.setTitle("Process Termination Failed");
+                                        alert.setHeaderText("Error");
+                                        alert.setContentText("Failed to terminate process. You may not have sufficient permissions.");
+                                    }
+                                    alert.showAndWait();
+                                    refreshProcessData();
+                                });
                                 return null;
                             }
                         };
@@ -821,20 +500,35 @@ public class SystemInfoTable extends Application {
         endProcessButton.setOnAction(event -> {
             ProcessInfo selectedProcess = processTable.getSelectionModel().getSelectedItem();
             if (selectedProcess != null) {
-                // Show confirmation dialog
+                // Show confirmation dialog using service
                 Alert confirmAlert = new Alert(Alert.AlertType.CONFIRMATION);
                 confirmAlert.setTitle("Confirm Process Termination");
                 confirmAlert.setHeaderText("End Process");
-                confirmAlert.setContentText("Are you sure you want to terminate process '" 
-                    + selectedProcess.getName() + "' (PID: " + selectedProcess.getPid() + ")?");
+                confirmAlert.setContentText(processService.getTerminationConfirmMessage(selectedProcess));
                 
                 confirmAlert.showAndWait().ifPresent(response -> {
                     if (response == ButtonType.OK) {
-                        // Run kill process in background thread
+                        // Run kill process in background thread using service
                         Task<Void> killTask = new Task<Void>() {
                             @Override
                             protected Void call() throws Exception {
-                                killProcess(selectedProcess.getPid());
+                                boolean success = processService.terminateProcess(selectedProcess);
+                                Platform.runLater(() -> {
+                                    Alert alert;
+                                    if (success) {
+                                        alert = new Alert(Alert.AlertType.INFORMATION);
+                                        alert.setTitle("Process Terminated");
+                                        alert.setHeaderText("Success");
+                                        alert.setContentText("Process has been terminated successfully.");
+                                    } else {
+                                        alert = new Alert(Alert.AlertType.ERROR);
+                                        alert.setTitle("Process Termination Failed");
+                                        alert.setHeaderText("Error");
+                                        alert.setContentText("Failed to terminate process. You may not have sufficient permissions.");
+                                    }
+                                    alert.showAndWait();
+                                    refreshProcessData();
+                                });
                                 return null;
                             }
                         };
@@ -901,51 +595,6 @@ public class SystemInfoTable extends Application {
         
         refreshStartupData();
         startAutoRefresh();
-    }
-
-    private void killProcess(String pid) {
-        try {
-            String osName = System.getProperty("os.name").toLowerCase();
-            Process process;
-            
-            if (osName.contains("win")) {
-                // Windows: Use taskkill command
-                process = Runtime.getRuntime().exec("taskkill /F /PID " + pid);
-            } else {
-                // Linux/Unix: Use kill command
-                process = Runtime.getRuntime().exec("kill -9 " + pid);
-            }
-            
-            int exitCode = process.waitFor();
-            
-            Platform.runLater(() -> {
-                Alert alert;
-                if (exitCode == 0) {
-                    alert = new Alert(Alert.AlertType.INFORMATION);
-                    alert.setTitle("Process Terminated");
-                    alert.setHeaderText("Success");
-                    alert.setContentText("Process with PID " + pid + " has been terminated successfully.");
-                } else {
-                    alert = new Alert(Alert.AlertType.ERROR);
-                    alert.setTitle("Process Termination Failed");
-                    alert.setHeaderText("Error");
-                    alert.setContentText("Failed to terminate process with PID " + pid + ". You may not have sufficient permissions.");
-                }
-                alert.showAndWait();
-                
-                // Refresh process data after killing
-                refreshProcessData();
-            });
-            
-        } catch (Exception e) {
-            Platform.runLater(() -> {
-                Alert alert = new Alert(Alert.AlertType.ERROR);
-                alert.setTitle("Process Termination Error");
-                alert.setHeaderText("Exception occurred");
-                alert.setContentText("Error terminating process: " + e.getMessage());
-                alert.showAndWait();
-            });
-        }
     }
 
     private VBox createResourceCharts() {
