@@ -8,6 +8,7 @@ import java.util.Map;
 // Import new OOP model classes
 import monitor.ui.model.*;
 import monitor.ui.service.*;
+import monitor.ui.components.ModernTopBar;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -40,8 +41,11 @@ import javafx.scene.control.TreeTableColumn;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import monitor.ui.components.DashboardCard;
 import javafx.util.Duration;
 
 public class SystemInfoTable extends Application {
@@ -80,6 +84,12 @@ public class SystemInfoTable extends Application {
     private static final int MAX_DATA_POINTS = 30; // Keep last 30 data points
 
     private TableView<ProcessInfo> processTable;
+    
+    // Dashboard cards for modern UI
+    private DashboardCard cpuCard;
+    private DashboardCard memoryCard;
+    private DashboardCard swapCard;
+    private DashboardCard diskCard;
 
     // --- PERFORMANCE OPTIMIZATION PATCH START ---
     // Updated to use ResourceMonitoringService - demonstrates Service Layer pattern  
@@ -202,6 +212,9 @@ public class SystemInfoTable extends Application {
                 if (cpuLineChart != null && memoryLineChart != null && swapLineChart != null) {
                     updateCharts(newData);
                 }
+                
+                // Update dashboard cards
+                updateDashboardCards(newData);
             });
         });
         task.setOnFailed(e -> {
@@ -399,11 +412,21 @@ public class SystemInfoTable extends Application {
     
     @Override
     public void start(Stage primaryStage) {
-        primaryStage.setTitle("System Monitoring Tool");
+        // Initialize modern UI
+        ModernUIManager.initialize();
+        ModernUIManager.setupStage(primaryStage);
 
-        TabPane tabPane = new TabPane();
+        // Create modern top bar
+        ModernTopBar topBar = new ModernTopBar(
+            this::manualRefresh,
+            this::toggleAutoRefresh
+        );
+
+        // Create main content with modern styling
+        TabPane tabPane = createModernTabPane();
         
         Tab processTab = new Tab("Processes");
+        processTab.setGraphic(ModernUIManager.Icons.process());
         processTable = new TableView<>(processData); // Sử dụng biến instance
         TableColumn<ProcessInfo, String> nameCol = new TableColumn<>("Name");
         nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
@@ -496,7 +519,8 @@ public class SystemInfoTable extends Application {
         
         // Add End Process button below the table
         Button endProcessButton = new Button("End Selected Process");
-        endProcessButton.setStyle("-fx-background-color: #f44336; -fx-text-fill: white; -fx-font-weight: bold;");
+        endProcessButton.setGraphic(ModernUIManager.Icons.stop());
+        endProcessButton.getStyleClass().addAll("button", "danger");
         endProcessButton.setOnAction(event -> {
             ProcessInfo selectedProcess = processTable.getSelectionModel().getSelectedItem();
             if (selectedProcess != null) {
@@ -545,14 +569,17 @@ public class SystemInfoTable extends Application {
         });
         
         VBox processLayout = new VBox(10, processTable, endProcessButton);
-        processLayout.setPadding(new Insets(10));
+        processLayout.setPadding(new Insets(20));
         processLayout.setAlignment(Pos.CENTER);
+        ModernUIManager.applyCardStyle(processLayout);
         processTab.setContent(processLayout);
         
         Tab resourceTab = new Tab("Resources");
+        resourceTab.setGraphic(ModernUIManager.Icons.cpu());
         VBox resourceLayout = new VBox(10); // Main container for resources tab
-        resourceLayout.setPadding(new Insets(10));
+        resourceLayout.setPadding(new Insets(20));
         resourceLayout.setAlignment(Pos.TOP_CENTER); // Align content to top center
+        ModernUIManager.applyCardStyle(resourceLayout);
 
         // Create and add charts
         VBox resourceChartsContainer = createResourceCharts();
@@ -566,6 +593,7 @@ public class SystemInfoTable extends Application {
         resourceTab.setContent(resourceLayout);
         
         Tab fileSystemTab = new Tab("File System");
+        fileSystemTab.setGraphic(ModernUIManager.Icons.storage());
         TableView<FileSystemInfo> fileSystemTable = new TableView<>(fileSystemData);
         TableColumn<FileSystemInfo, String> mountCol = new TableColumn<>("Mount Point");
         mountCol.setCellValueFactory(new PropertyValueFactory<>("mountPoint"));
@@ -581,15 +609,30 @@ public class SystemInfoTable extends Application {
         availableCol.setCellValueFactory(new PropertyValueFactory<>("usableSpace"));
         
         fileSystemTable.getColumns().addAll(mountCol, nameColFS, typeCol, totalCol, usedCol, availableCol);
-        fileSystemTab.setContent(fileSystemTable);
+        
+        VBox fileSystemLayout = new VBox(fileSystemTable);
+        fileSystemLayout.setPadding(new Insets(20));
+        ModernUIManager.applyCardStyle(fileSystemLayout);
+        fileSystemTab.setContent(fileSystemLayout);
         
         Tab startupTab = new Tab("Startup");
+        startupTab.setGraphic(ModernUIManager.Icons.startup());
         TreeTableView<StartupGroup> startupTreeTable = createStartupTreeTable();
-        startupTab.setContent(startupTreeTable);
+        
+        VBox startupLayout = new VBox(startupTreeTable);
+        startupLayout.setPadding(new Insets(20));
+        ModernUIManager.applyCardStyle(startupLayout);
+        startupTab.setContent(startupLayout);
         
         tabPane.getTabs().addAll(processTab, resourceTab, fileSystemTab, startupTab);
 
-        Scene scene = new Scene(tabPane, 800, 700); // Increased height for charts
+        // Create main layout with top bar
+        VBox mainLayout = new VBox();
+        mainLayout.getChildren().addAll(topBar, tabPane);
+        VBox.setVgrow(tabPane, Priority.ALWAYS);
+
+        Scene scene = new Scene(mainLayout, 1200, 800);
+        ModernUIManager.setupScene(scene);
         primaryStage.setScene(scene);
         primaryStage.show();
         
@@ -597,7 +640,36 @@ public class SystemInfoTable extends Application {
         startAutoRefresh();
     }
 
+    private TabPane createModernTabPane() {
+        TabPane tabPane = new TabPane();
+        tabPane.getStyleClass().add("modern-tab-pane");
+        return tabPane;
+    }
+
+    private void manualRefresh() {
+        refreshProcessData();
+        refreshResourceData();
+        refreshFileSystemData();
+    }
+
+    private void toggleAutoRefresh() {
+        if (refreshTimeline != null) {
+            if (refreshTimeline.getStatus() == Timeline.Status.RUNNING) {
+                refreshTimeline.stop();
+            } else {
+                refreshTimeline.play();
+            }
+        }
+    }
+
     private VBox createResourceCharts() {
+        VBox mainContainer = new VBox(20);
+        mainContainer.setPadding(new Insets(20));
+        mainContainer.setAlignment(Pos.TOP_CENTER);
+
+        // Create modern dashboard cards
+        HBox dashboardCards = createDashboardCards();
+        
         GridPane gridPane = new GridPane();
         gridPane.setPadding(new Insets(10));
         gridPane.setHgap(10);
@@ -728,9 +800,43 @@ public class SystemInfoTable extends Application {
             gridPane.getColumnConstraints().add(col);
         }
 
-        VBox container = new VBox(gridPane);
-        container.setAlignment(Pos.CENTER);
-        return container;
+        mainContainer.getChildren().addAll(dashboardCards, gridPane);
+        return mainContainer;
+    }
+
+    private HBox createDashboardCards() {
+        HBox cardsContainer = new HBox(15);
+        cardsContainer.setAlignment(Pos.CENTER);
+        cardsContainer.setPadding(new Insets(10));
+
+        // Create dashboard cards
+        cpuCard = new DashboardCard("CPU Usage", ModernUIManager.Icons.cpu());
+        memoryCard = new DashboardCard("Memory Usage", ModernUIManager.Icons.memory());
+        swapCard = new DashboardCard("Swap Usage", ModernUIManager.Icons.storage());
+        diskCard = new DashboardCard("Disk I/O", ModernUIManager.Icons.storage());
+
+        cardsContainer.getChildren().addAll(cpuCard, memoryCard, swapCard, diskCard);
+        return cardsContainer;
+    }
+
+    private void updateDashboardCards(List<ResourceInfo> resources) {
+        if (resources == null || resources.isEmpty()) return;
+
+        for (ResourceInfo resource : resources) {
+            String name = resource.getName();
+            double usedPercent = resource.getUsedPercent();
+            
+            if (name.contains("CPU") || name.contains("Processor")) {
+                cpuCard.updateValue(String.format("%.1f", usedPercent), "%");
+                cpuCard.updateProgress(usedPercent / 100.0);
+            } else if (name.contains("Memory") || name.contains("RAM")) {
+                memoryCard.updateValue(String.format("%.1f", usedPercent), "%");
+                memoryCard.updateProgress(usedPercent / 100.0);
+            } else if (name.contains("Swap")) {
+                swapCard.updateValue(String.format("%.1f", usedPercent), "%");
+                swapCard.updateProgress(usedPercent / 100.0);
+            }
+        }
     }
 
     public static void main(String[] args) {

@@ -1,0 +1,299 @@
+/* Modern System Monitor Theme */
+/* Custom styling to complement AtlantaFX themes */
+
+/* Root variables for consistent theming */
+.root {
+    /* Primary colors */
+    -fx-primary: #007acc;
+    -fx-primary-light: #4da6ff;
+    -fx-primary-dark: #005a99;
+    
+    /* Background colors */
+    -fx-bg-primary: #ffffff;
+    -fx-bg-secondary: #f5f5f5;
+    -fx-bg-tertiary: #e0e0e0;
+    
+    /* Text colors */
+    -fx-text-primary: #333333;
+    -fx-text-secondary: #666666;
+    -fx-text-muted: #999999;
+    
+    /* Status colors */
+    -fx-success: #28a745;
+    -fx-warning: #ffc107;
+    -fx-danger: #dc3545;
+    -fx-info: #17a2b8;
+    
+    /* Shadows and effects */
+    -fx-shadow-light: rgba(0, 0, 0, 0.1);
+    -fx-shadow-medium: rgba(0, 0, 0, 0.2);
+    -fx-shadow-dark: rgba(0, 0, 0, 0.3);
+}
+
+/* Dark theme variables */
+.root.dark {
+    -fx-bg-primary: #1e1e1e;
+    -fx-bg-secondary: #2d2d30;
+    -fx-bg-tertiary: #3e3e42;
+    
+    -fx-text-primary: #ffffff;
+    -fx-text-secondary: #cccccc;
+    -fx-text-muted: #999999;
+}
+
+/* Modern tab styling */
+.tab-pane {
+    -fx-tab-min-height: 40px;
+    -fx-background-color: -fx-bg-primary;
+}
+
+.tab-pane .tab-header-area {
+    -fx-padding: 0;
+    -fx-background-color: -fx-bg-secondary;
+    -fx-border-color: transparent transparent -fx-bg-tertiary transparent;
+    -fx-border-width: 0 0 1px 0;
+}
+
+.tab-pane .tab {
+    -fx-background-color: transparent;
+    -fx-background-radius: 8px 8px 0 0;
+    -fx-padding: 12px 20px;
+    -fx-font-size: 14px;
+    -fx-font-weight: 500;
+    -fx-text-fill: -fx-text-secondary;
+}
+
+.tab-pane .tab:selected {
+    -fx-background-color: -fx-bg-primary;
+    -fx-text-fill: -fx-primary;
+    -fx-border-color: transparent transparent -fx-primary transparent;
+    -fx-border-width: 0 0 2px 0;
+}
+
+.tab-pane .tab:hover {
+    -fx-background-color: derive(-fx-bg-secondary, 10%);
+}
+
+/* Modern table styling */
+.table-view {
+    -fx-background-color: -fx-bg-primary;
+    -fx-border-color: -fx-bg-tertiary;
+    -fx-border-radius: 8px;
+    -fx-background-radius: 8px;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-light, 10, 0, 0, 2);
+}
+
+.table-view .column-header {
+    -fx-background-color: -fx-bg-secondary;
+    -fx-text-fill: -fx-text-primary;
+    -fx-font-weight: 600;
+    -fx-font-size: 13px;
+    -fx-padding: 12px 8px;
+    -fx-border-color: transparent transparent -fx-bg-tertiary transparent;
+    -fx-border-width: 0 0 1px 0;
+}
+
+.table-view .table-cell {
+    -fx-padding: 8px;
+    -fx-font-size: 12px;
+    -fx-text-fill: -fx-text-primary;
+    -fx-border-color: transparent transparent -fx-bg-tertiary transparent;
+    -fx-border-width: 0 0 0.5px 0;
+}
+
+.table-view .table-row-cell:selected {
+    -fx-background-color: derive(-fx-primary, 80%);
+    -fx-text-fill: -fx-text-primary;
+}
+
+.table-view .table-row-cell:hover {
+    -fx-background-color: derive(-fx-bg-secondary, 20%);
+}
+
+/* Modern button styling */
+.button {
+    -fx-background-color: -fx-primary;
+    -fx-text-fill: white;
+    -fx-font-weight: 500;
+    -fx-padding: 10px 20px;
+    -fx-background-radius: 6px;
+    -fx-cursor: hand;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-medium, 6, 0, 0, 2);
+}
+
+.button:hover {
+    -fx-background-color: -fx-primary-light;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-medium, 8, 0, 0, 3);
+}
+
+.button:pressed {
+    -fx-background-color: -fx-primary-dark;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-medium, 4, 0, 0, 1);
+}
+
+.button.danger {
+    -fx-background-color: -fx-danger;
+}
+
+.button.danger:hover {
+    -fx-background-color: derive(-fx-danger, 10%);
+}
+
+/* Modern chart styling */
+.chart {
+    -fx-background-color: -fx-bg-primary;
+    -fx-border-color: -fx-bg-tertiary;
+    -fx-border-radius: 8px;
+    -fx-background-radius: 8px;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-light, 8, 0, 0, 2);
+}
+
+.chart-title {
+    -fx-text-fill: -fx-text-primary;
+    -fx-font-size: 16px;
+    -fx-font-weight: 600;
+    -fx-padding: 10px;
+}
+
+.chart-legend {
+    -fx-background-color: transparent;
+    -fx-padding: 10px;
+}
+
+.axis {
+    -fx-tick-label-fill: -fx-text-secondary;
+    -fx-tick-label-font-size: 11px;
+}
+
+.axis-label {
+    -fx-text-fill: -fx-text-primary;
+    -fx-font-size: 12px;
+    -fx-font-weight: 500;
+}
+
+/* Progress bar styling */
+.progress-bar {
+    -fx-background-color: -fx-bg-tertiary;
+    -fx-background-radius: 10px;
+    -fx-pref-height: 8px;
+}
+
+.progress-bar .bar {
+    -fx-background-color: linear-gradient(to right, -fx-primary, -fx-primary-light);
+    -fx-background-radius: 10px;
+    -fx-background-insets: 0;
+}
+
+/* Status indicator styling */
+.status-running {
+    -fx-text-fill: -fx-success;
+    -fx-font-weight: 600;
+}
+
+.status-stopped {
+    -fx-text-fill: -fx-danger;
+    -fx-font-weight: 600;
+}
+
+.status-unknown {
+    -fx-text-fill: -fx-warning;
+    -fx-font-weight: 600;
+}
+
+/* Card-like containers */
+.card {
+    -fx-background-color: -fx-bg-primary;
+    -fx-background-radius: 12px;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-light, 12, 0, 0, 4);
+    -fx-padding: 20px;
+}
+
+/* Modern scrollbar */
+.scroll-bar {
+    -fx-background-color: transparent;
+}
+
+.scroll-bar .track {
+    -fx-background-color: -fx-bg-secondary;
+    -fx-background-radius: 4px;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: -fx-text-muted;
+    -fx-background-radius: 4px;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: -fx-text-secondary;
+}
+
+/* Animations */
+.fade-in {
+    -fx-opacity: 0;
+}
+
+.fade-in:animated {
+    -fx-opacity: 1;
+}
+
+/* Tree table styling */
+.tree-table-view {
+    -fx-background-color: -fx-bg-primary;
+    -fx-border-color: -fx-bg-tertiary;
+    -fx-border-radius: 8px;
+    -fx-background-radius: 8px;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-light, 10, 0, 0, 2);
+}
+
+.tree-table-view .column-header {
+    -fx-background-color: -fx-bg-secondary;
+    -fx-text-fill: -fx-text-primary;
+    -fx-font-weight: 600;
+    -fx-font-size: 13px;
+    -fx-padding: 12px 8px;
+}
+
+.tree-table-view .tree-table-cell {
+    -fx-padding: 8px;
+    -fx-font-size: 12px;
+    -fx-text-fill: -fx-text-primary;
+}
+
+.tree-table-view .tree-table-row-cell:selected {
+    -fx-background-color: derive(-fx-primary, 80%);
+}
+
+/* Context menu styling */
+.context-menu {
+    -fx-background-color: -fx-bg-primary;
+    -fx-background-radius: 8px;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-dark, 12, 0, 0, 4);
+    -fx-padding: 4px 0;
+}
+
+.menu-item {
+    -fx-padding: 8px 16px;
+    -fx-font-size: 13px;
+}
+
+.menu-item:focused {
+    -fx-background-color: -fx-primary;
+    -fx-text-fill: white;
+}
+
+/* Alert dialog styling */
+.alert {
+    -fx-background-color: -fx-bg-primary;
+    -fx-background-radius: 12px;
+    -fx-effect: dropshadow(gaussian, -fx-shadow-dark, 16, 0, 0, 6);
+}
+
+.alert .header-panel {
+    -fx-background-color: -fx-bg-secondary;
+    -fx-background-radius: 12px 12px 0 0;
+    -fx-padding: 16px;
+}
+
+.alert .content {
+    -fx-padding: 16px;
+} 
