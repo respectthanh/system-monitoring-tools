@@ -1,6 +1,7 @@
 package monitor.ui.service;
 
 import monitor.ui.model.FileSystemInfo;
+import monitor.ui.model.GPUInfo;
 import monitor.ui.model.ProcessInfo;
 import monitor.ui.model.ResourceInfo;
 import monitor.ui.model.StartupGroup;
@@ -133,6 +134,32 @@ public class SystemInfoFactory {
         }
         
         return new StartupGroup(startupInfo);
+    }
+    
+    /**
+     * Creates GPUInfo with comprehensive GPU data
+     */
+    public GPUInfo createGPUInfo(String name, String vendor, long totalMemory, long usedMemory,
+                                double gpuUtilization, double temperature, int fanSpeed,
+                                long clockSpeed, long memoryClockSpeed, String driverVersion, boolean isDiscrete) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new IllegalArgumentException("GPU name cannot be null or empty");
+        }
+        
+        return new GPUInfo(name, vendor, totalMemory, usedMemory, gpuUtilization, 
+                          temperature, fanSpeed, clockSpeed, memoryClockSpeed, 
+                          driverVersion, isDiscrete);
+    }
+    
+    /**
+     * Creates basic GPUInfo with name and vendor only
+     */
+    public GPUInfo createBasicGPUInfo(String name, String vendor) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new IllegalArgumentException("GPU name cannot be null or empty");
+        }
+        
+        return new GPUInfo(name, vendor);
     }
     
     // Helper methods for determining status

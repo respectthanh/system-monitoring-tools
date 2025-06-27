@@ -54,12 +54,14 @@ public class SystemInfoTable extends Application {
     private final ResourceMonitoringService resourceService;
     private final FileSystemService fileSystemService;
     private final StartupService startupService;
+    private final GPUService gpuService;
     
     private final ObservableList<ProcessInfo> processData = FXCollections.observableArrayList();
     private final ObservableList<ResourceInfo> resourceData = FXCollections.observableArrayList();
     private final ObservableList<FileSystemInfo> fileSystemData = FXCollections.observableArrayList();
     private final ObservableList<ResourceInfo> cpuCoreData = FXCollections.observableArrayList();
     private final ObservableList<StartupInfo> startupData = FXCollections.observableArrayList();
+    private final ObservableList<GPUInfo> gpuData = FXCollections.observableArrayList();
     private TreeItem<StartupGroup> startupTreeRoot;
     
         // Constructor demonstrating Dependency Injection
@@ -68,6 +70,7 @@ public class SystemInfoTable extends Application {
         this.resourceService = new ResourceMonitoringService();
         this.fileSystemService = new FileSystemService();
         this.startupService = new StartupService();
+        this.gpuService = new GPUService();
     }
     
     private Timeline refreshTimeline;
@@ -90,6 +93,7 @@ public class SystemInfoTable extends Application {
     private DashboardCard memoryCard;
     private DashboardCard swapCard;
     private DashboardCard diskCard;
+    private DashboardCard gpuCard;
 
     // --- PERFORMANCE OPTIMIZATION PATCH START ---
     // Updated to use ResourceMonitoringService - demonstrates Service Layer pattern  
@@ -103,6 +107,7 @@ public class SystemInfoTable extends Application {
             refreshProcessData();
             refreshResourceData();
             refreshFileSystemData();
+            refreshGPUData();
         }));
         refreshTimeline.setCycleCount(Timeline.INDEFINITE);
         refreshTimeline.play();
@@ -120,6 +125,10 @@ public class SystemInfoTable extends Application {
     
     private List<StartupInfo> getStartupApplications() {
         return startupService.getStartupApplications();
+    }
+    
+    private List<GPUInfo> getGPUInfo() {
+        return gpuService.getGPUInfo();
     }
     // 4. Only update changed process/resource data in refreshProcessData/refreshResourceData
     private void refreshProcessData() {
@@ -219,6 +228,29 @@ public class SystemInfoTable extends Application {
         });
         task.setOnFailed(e -> {
             System.err.println("Failed to refresh resource data: " + task.getException().getMessage());
+        });
+        new Thread(task).start();
+    }
+    
+    private void refreshGPUData() {
+        Task<List<GPUInfo>> task = new Task<List<GPUInfo>>() {
+            @Override
+            protected List<GPUInfo> call() throws Exception {
+                return getGPUInfo();
+            }
+        };
+        task.setOnSucceeded(e -> {
+            List<GPUInfo> newData = task.getValue();
+            Platform.runLater(() -> {
+                if (!gpuData.equals(newData)) {
+                    gpuData.setAll(newData);
+                }
+                // Update GPU dashboard card
+                updateGPUDashboardCard(newData);
+            });
+        });
+        task.setOnFailed(e -> {
+            System.err.println("Failed to refresh GPU data: " + task.getException().getMessage());
         });
         new Thread(task).start();
     }
@@ -624,7 +656,74 @@ public class SystemInfoTable extends Application {
         ModernUIManager.applyCardStyle(startupLayout);
         startupTab.setContent(startupLayout);
         
-        tabPane.getTabs().addAll(processTab, resourceTab, fileSystemTab, startupTab);
+        // GPU Tab
+        Tab gpuTab = new Tab("GPU");
+        gpuTab.setGraphic(ModernUIManager.Icons.monitor());
+        TableView<GPUInfo> gpuTable = new TableView<>(gpuData);
+        
+        TableColumn<GPUInfo, String> gpuNameCol = new TableColumn<>("GPU Name");
+        gpuNameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        gpuNameCol.setPrefWidth(200);
+        
+        TableColumn<GPUInfo, String> gpuVendorCol = new TableColumn<>("Vendor");
+        gpuVendorCol.setCellValueFactory(new PropertyValueFactory<>("vendor"));
+        gpuVendorCol.setPrefWidth(120);
+        
+        TableColumn<GPUInfo, String> gpuTypeCol = new TableColumn<>("Type");
+        gpuTypeCol.setCellValueFactory(new PropertyValueFactory<>("gpuType"));
+        gpuTypeCol.setPrefWidth(100);
+        
+        TableColumn<GPUInfo, String> gpuMemoryCol = new TableColumn<>("VRAM");
+        gpuMemoryCol.setCellValueFactory(cellData -> 
+            new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFormattedTotalMemory()));
+        gpuMemoryCol.setPrefWidth(120);
+        
+        TableColumn<GPUInfo, Double> gpuUtilizationCol = new TableColumn<>("Utilization (%)");
+        gpuUtilizationCol.setCellValueFactory(new PropertyValueFactory<>("gpuUtilization"));
+        gpuUtilizationCol.setPrefWidth(140);
+        gpuUtilizationCol.setCellFactory(col -> new javafx.scene.control.TableCell<GPUInfo, Double>() {
+            private final javafx.scene.control.ProgressBar bar = new javafx.scene.control.ProgressBar();
+            @Override
+            protected void updateItem(Double value, boolean empty) {
+                super.updateItem(value, empty);
+                if (empty || value == null) {
+                    setGraphic(null);
+                    setText(null);
+                } else {
+                    double percent = value / 100.0;
+                    bar.setProgress(percent);
+                    bar.setPrefWidth(100);
+                    // Color code: green <40, yellow <70, orange <90, red >=90
+                    String color;
+                    if (value < 40) color = "#4caf50"; // green
+                    else if (value < 70) color = "#ffeb3b"; // yellow
+                    else if (value < 90) color = "#ff9800"; // orange
+                    else color = "#f44336"; // red
+                    bar.setStyle("-fx-accent: " + color + ";");
+                    setGraphic(bar);
+                    setText(String.format("%.1f%%", value));
+                }
+            }
+        });
+        
+        TableColumn<GPUInfo, String> gpuTempCol = new TableColumn<>("Temperature");
+        gpuTempCol.setCellValueFactory(cellData -> 
+            new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFormattedTemperature()));
+        gpuTempCol.setPrefWidth(120);
+        
+        TableColumn<GPUInfo, String> gpuDriverCol = new TableColumn<>("Driver Version");
+        gpuDriverCol.setCellValueFactory(new PropertyValueFactory<>("driverVersion"));
+        gpuDriverCol.setPrefWidth(150);
+        
+        gpuTable.getColumns().addAll(gpuNameCol, gpuVendorCol, gpuTypeCol, gpuMemoryCol, 
+                                    gpuUtilizationCol, gpuTempCol, gpuDriverCol);
+        
+        VBox gpuLayout = new VBox(gpuTable);
+        gpuLayout.setPadding(new Insets(20));
+        ModernUIManager.applyCardStyle(gpuLayout);
+        gpuTab.setContent(gpuLayout);
+        
+        tabPane.getTabs().addAll(processTab, resourceTab, fileSystemTab, startupTab, gpuTab);
 
         // Create main layout with top bar
         VBox mainLayout = new VBox();
@@ -637,6 +736,7 @@ public class SystemInfoTable extends Application {
         primaryStage.show();
         
         refreshStartupData();
+        refreshGPUData();
         startAutoRefresh();
     }
 
@@ -650,6 +750,7 @@ public class SystemInfoTable extends Application {
         refreshProcessData();
         refreshResourceData();
         refreshFileSystemData();
+        refreshGPUData();
     }
 
     private void toggleAutoRefresh() {
@@ -814,8 +915,9 @@ public class SystemInfoTable extends Application {
         memoryCard = new DashboardCard("Memory Usage", ModernUIManager.Icons.memory());
         swapCard = new DashboardCard("Swap Usage", ModernUIManager.Icons.storage());
         diskCard = new DashboardCard("Disk I/O", ModernUIManager.Icons.storage());
+        gpuCard = new DashboardCard("GPU Usage", ModernUIManager.Icons.monitor());
 
-        cardsContainer.getChildren().addAll(cpuCard, memoryCard, swapCard, diskCard);
+        cardsContainer.getChildren().addAll(cpuCard, memoryCard, swapCard, diskCard, gpuCard);
         return cardsContainer;
     }
 
@@ -837,6 +939,28 @@ public class SystemInfoTable extends Application {
                 swapCard.updateProgress(usedPercent / 100.0);
             }
         }
+    }
+    
+    private void updateGPUDashboardCard(List<GPUInfo> gpus) {
+        if (gpus == null || gpus.isEmpty() || gpuCard == null) {
+            if (gpuCard != null) {
+                gpuCard.updateValue("N/A", "");
+                gpuCard.updateProgress(0.0);
+            }
+            return;
+        }
+
+        // Get primary GPU (first one or highest utilization)
+        GPUInfo primaryGPU = gpus.get(0);
+        for (GPUInfo gpu : gpus) {
+            if (gpu.getGpuUtilization() > primaryGPU.getGpuUtilization()) {
+                primaryGPU = gpu;
+            }
+        }
+
+        double utilization = primaryGPU.getGpuUtilization();
+        gpuCard.updateValue(String.format("%.1f", utilization), "%");
+        gpuCard.updateProgress(utilization / 100.0);
     }
 
     public static void main(String[] args) {
